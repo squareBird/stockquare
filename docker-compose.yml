@@ -1,0 +1,80 @@
+# Stockquare — Phase 1 local development stack
+#
+# Usage:
+#   1. Create `.env` at project root. Minimum variables (KIS keys optional in dev):
+#        POSTGRES_USER=stockquare
+#        POSTGRES_PASSWORD=stockquare
+#        POSTGRES_DB=stockquare
+#        KIS_APP_KEY=...
+#        KIS_APP_SECRET=...
+#        KIS_ACCOUNT_NO=...
+#   2. `docker compose up --build -d`
+#   3. Backend: http://localhost:8000   Frontend: http://localhost:3000/dashboard
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockquare-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stockquare}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockquare}
+      POSTGRES_DB: ${POSTGRES_DB:-stockquare}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stockquare} -d ${POSTGRES_DB:-stockquare}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - stockquare-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: stockquare-backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Override sqlite default from app/config.py with the in-network postgres.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stockquare}:${POSTGRES_PASSWORD:-stockquare}@postgres:5432/${POSTGRES_DB:-stockquare}
+      APP_ENV: development
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stockquare-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Client-side fetches run in the browser, so this must be reachable
+        # from the host, not the docker network hostname.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    container_name: stockquare-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - stockquare-net
+
+networks:
+  stockquare-net:
+
+volumes:
+  postgres_data:

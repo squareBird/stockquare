@@ -1,1 +1,6 @@
 .omc/
+
+# Environment files — contains KIS API secrets, NEVER commit
+.env
+.env.local
+.env.*.local
