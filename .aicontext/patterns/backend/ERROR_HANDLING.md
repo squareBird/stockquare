@@ -4,50 +4,81 @@ Error handling patterns for FastAPI + KIS API integration.
 
 ## Custom Exception Hierarchy
 
-Define business-level exceptions. Return consistent responses via FastAPI exception handlers.
+Define business-level exceptions with class-level `code` + `http_status`
+so the FastAPI exception handler can dispatch without an isinstance ladder.
 
 ```python
-class StockquareError(Exception):
-    """Base exception."""
+from typing import ClassVar
 
-    def __init__(self, message: str, code: str) -> None:
+
+class StockquareError(Exception):
+    """Base exception — all business errors inherit from this."""
+
+    code: ClassVar[str] = "STOCKQUARE_ERROR"
+    http_status: ClassVar[int] = 400
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
         self.message = message
-        self.code = code
 
 
 class KISAPIError(StockquareError):
-    """KIS API call failure."""
+    """KIS Open API call failure (upstream 4xx/5xx or network)."""
 
-    def __init__(self, message: str, status_code: int) -> None:
-        super().__init__(message, code="KIS_API_ERROR")
-        self.status_code = status_code
+    code: ClassVar[str] = "KIS_API_ERROR"
+    http_status: ClassVar[int] = 502
+
+    def __init__(self, message: str = "Upstream KIS request failed") -> None:
+        super().__init__(message)
 
 
 class TokenExpiredError(KISAPIError):
-    """Access token expired."""
+    """KIS access token expired or refresh exhausted."""
+
+    code: ClassVar[str] = "TOKEN_EXPIRED"
+    http_status: ClassVar[int] = 401
 
     def __init__(self) -> None:
-        super().__init__("Access token expired", status_code=401)
+        super().__init__("Access token expired")
 
 
-class OrderFailedError(StockquareError):
-    """Order execution failure."""
+class KISNotConfiguredError(StockquareError):
+    """KIS credentials missing — raised at request time, no network I/O.
 
-    def __init__(self, message: str, order_id: str | None = None) -> None:
-        super().__init__(message, code="ORDER_FAILED")
-        self.order_id = order_id
+    Preferred over startup crash so DB-only endpoints stay serviceable
+    while KIS-dependent routes return 503 until operators fill the env.
+    """
+
+    code: ClassVar[str] = "KIS_NOT_CONFIGURED"
+    http_status: ClassVar[int] = 503
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        joined = ", ".join(missing) if missing else "KIS credentials"
+        super().__init__(f"KIS not configured (missing: {joined})")
 
 
-class InsufficientBalanceError(StockquareError):
-    """Insufficient balance."""
-
-    def __init__(self) -> None:
-        super().__init__("Insufficient balance", code="INSUFFICIENT_BALANCE")
+# Domain-specific subclasses follow the same ClassVar pattern. Examples:
+# InvalidSymbolError (400 / INVALID_SYMBOL), DuplicateSymbolError (409 /
+# DUPLICATE_SYMBOL), WatchlistFullError (400 / WATCHLIST_FULL),
+# WatchlistNotFoundError (404 / NOT_FOUND), InvalidQueryError (400 /
+# INVALID_QUERY). Each lives in `app/core/exceptions.py`.
 ```
+
+Two rules that fall out of this shape:
+
+1. **One source of truth per error.** `http_status` lives on the class
+   next to `code` — the handler never needs a parallel lookup table.
+2. **Subclasses never re-define the base fields implicitly.** A subclass
+   that needs a different HTTP status re-declares `http_status` as a new
+   `ClassVar`; one that only changes the message signature overrides
+   `__init__` without touching the classvars.
 
 ## FastAPI Exception Handler
 
-Return all exceptions in a consistent JSON format.
+Return all exceptions in a consistent JSON format. Use the subclass's
+class-level `http_status` so adding a new exception never requires a
+handler edit.
 
 ```python
 from fastapi import FastAPI, Request
@@ -57,11 +88,12 @@ app = FastAPI()
 
 @app.exception_handler(StockquareError)
 async def stockquare_error_handler(request: Request, exc: StockquareError) -> JSONResponse:
-    status_code = 400
-    if isinstance(exc, KISAPIError):
-        status_code = exc.status_code
+    logger.info(
+        "stockquare error",
+        extra={"code": exc.code, "path": request.url.path, "status": exc.http_status},
+    )
     return JSONResponse(
-        status_code=status_code,
+        status_code=exc.http_status,
         content={"code": exc.code, "message": exc.message},
     )
 ```
