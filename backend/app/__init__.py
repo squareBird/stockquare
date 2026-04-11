@@ -1,0 +1,1 @@
+"""Stockquare backend application."""
