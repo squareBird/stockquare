@@ -5,11 +5,10 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import StaleBadge from '@/components/common/StaleBadge';
+import { useMarketPollingInterval } from '@/hooks/useMarketPolling';
 import { addWatchlistItem, fetchWatchlist, removeWatchlistItem } from '@/lib/api/watchlist';
 import { useDashboardUI, type WatchlistSortKey } from '@/stores/dashboard-ui';
 import type { WatchlistItem as WatchlistItemType } from '@/types/dashboard';
-
-import { useMarketPollingInterval } from '../_hooks/useMarketPolling';
 
 import AddStockModal from './AddStockModal';
 import DegradedWatchlistItem from './DegradedWatchlistItem';
@@ -82,7 +81,7 @@ export default function Watchlist() {
   const showFullError = !data && isError;
 
   return (
-    <article className="rounded-xl border border-gray-200 bg-white shadow-sm">
+    <article className="rounded-xl border border-gray-200 bg-white shadow-card">
       <header className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
         <div className="flex items-center gap-4">
           <h2 className="text-base font-semibold tracking-tight text-gray-900">Watchlist</h2>

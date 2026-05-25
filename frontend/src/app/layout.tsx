@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 
 import type { Metadata } from 'next';
 
+import Header from '@/components/layout/Header';
+
 import Providers from './providers';
 
 import './globals.css';
@@ -19,7 +21,10 @@ export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="ko">
       <body>
-        <Providers>{children}</Providers>
+        <Providers>
+          <Header />
+          {children}
+        </Providers>
       </body>
     </html>
   );

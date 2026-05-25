@@ -10,6 +10,13 @@ import type {
   WatchlistItem,
   WatchlistResult,
 } from '@/types/dashboard';
+import type {
+  Order,
+  OrderModifyRequest,
+  OrderRequest,
+  OrdersResult,
+} from '@/types/orders';
+import type { Holding, HoldingsResult } from '@/types/portfolio';
 
 export const isMockEnabled = (): boolean =>
   process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_USE_MOCK === 'true';
@@ -17,6 +24,7 @@ export const isMockEnabled = (): boolean =>
 const MOCK_ACCOUNT_STATUS: AccountStatus = {
   status: 'connected',
   accountNumber: '****1234',
+  accountMode: 'mock',
 };
 
 const MOCK_ACCOUNT_SUMMARY: AccountSummary = {
@@ -89,8 +97,36 @@ const MOCK_SEARCH_UNIVERSE: StockSearchResult[] = [
   { symbol: '247540', name: 'EcoPro BM', market: 'KOSDAQ' },
 ];
 
+const MOCK_HOLDINGS: Holding[] = [
+  {
+    symbol: '005930',
+    name: 'Samsung Electronics',
+    quantity: 10,
+    avgPurchasePrice: 71_000,
+    currentPrice: 72_300,
+    evaluationAmount: 723_000,
+    purchaseAmount: 710_000,
+    profit: 13_000,
+    profitRate: 1.83,
+  },
+  {
+    symbol: '000660',
+    name: 'SK Hynix',
+    quantity: 5,
+    avgPurchasePrice: 205_000,
+    currentPrice: 198_500,
+    evaluationAmount: 992_500,
+    purchaseAmount: 1_025_000,
+    profit: -32_500,
+    profitRate: -3.17,
+  },
+];
+
 let mockWatchlist: WatchlistItem[] = [...MOCK_WATCHLIST];
-let nextId = mockWatchlist.length + 1;
+let nextWatchlistId = mockWatchlist.length + 1;
+
+let mockOrders: Order[] = [];
+let nextOrderId = 1;
 
 export const mockApi = {
   getAccountStatus: (): AccountStatus => MOCK_ACCOUNT_STATUS,
@@ -102,7 +138,7 @@ export const mockApi = {
   addWatchlistItem: (symbol: string): WatchlistItem => {
     const base = MOCK_SEARCH_UNIVERSE.find((s) => s.symbol === symbol);
     const item: WatchlistItem = {
-      id: nextId,
+      id: nextWatchlistId,
       sortOrder: mockWatchlist.length,
       symbol,
       name: base?.name ?? symbol,
@@ -111,7 +147,7 @@ export const mockApi = {
       changeRate: 0,
       volume: 0,
     };
-    nextId += 1;
+    nextWatchlistId += 1;
     mockWatchlist = [...mockWatchlist, item];
     return item;
   },
@@ -139,5 +175,64 @@ export const mockApi = {
         s.symbol.toLowerCase().includes(normalized) ||
         s.name.toLowerCase().includes(normalized),
     );
+  },
+  getHoldings: (): HoldingsResult => ({
+    holdings: [...MOCK_HOLDINGS],
+    errors: [],
+  }),
+  getOrders: (): OrdersResult => ({
+    orders: [...mockOrders].reverse(),
+    count: mockOrders.length,
+  }),
+  getOrder: (id: number): Order => {
+    const order = mockOrders.find((o) => o.id === id);
+    if (!order) throw new Error(`Mock order ${id} not found`);
+    return order;
+  },
+  placeOrder: (request: OrderRequest): Order => {
+    const stock = MOCK_SEARCH_UNIVERSE.find((s) => s.symbol === request.symbol);
+    const now = new Date().toISOString();
+    const order: Order = {
+      id: nextOrderId,
+      symbol: request.symbol,
+      name: stock?.name ?? request.symbol,
+      side: request.side,
+      orderType: request.orderType,
+      quantity: request.quantity,
+      price: request.price,
+      filledQuantity: 0,
+      filledPrice: 0,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+    nextOrderId += 1;
+    mockOrders = [...mockOrders, order];
+    return order;
+  },
+  cancelOrder: (id: number): void => {
+    mockOrders = mockOrders.map((order) =>
+      order.id === id
+        ? { ...order, status: 'cancelled', updatedAt: new Date().toISOString() }
+        : order,
+    );
+  },
+  modifyOrder: (id: number, patch: OrderModifyRequest): Order => {
+    const index = mockOrders.findIndex((o) => o.id === id);
+    if (index === -1) throw new Error(`Mock order ${id} not found`);
+    const existing = mockOrders[index];
+    if (!existing) throw new Error(`Mock order ${id} not found`);
+    const updated: Order = {
+      ...existing,
+      quantity: patch.quantity ?? existing.quantity,
+      price: patch.price ?? existing.price,
+      updatedAt: new Date().toISOString(),
+    };
+    mockOrders = [
+      ...mockOrders.slice(0, index),
+      updated,
+      ...mockOrders.slice(index + 1),
+    ];
+    return updated;
   },
 };

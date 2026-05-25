@@ -4,9 +4,12 @@
 
 export type AccountConnectionStatus = 'connected' | 'disconnected' | 'error';
 
+export type AccountMode = 'real' | 'mock';
+
 export interface AccountStatus {
   status: AccountConnectionStatus;
   accountNumber?: string;
+  accountMode?: AccountMode;
   message?: string;
 }
 
@@ -44,6 +47,11 @@ export interface WatchlistResult {
 }
 
 export type MarketStatus = 'open' | 'closed' | 'pre_market';
+
+// Country tab key for the MarketIndex dashboard card. KR is the only tab
+// currently backed by a real query; US/JP/CN render a pending skeleton
+// until the backend /market/indices endpoint gains a `country` filter.
+export type Country = 'KR' | 'US' | 'JP' | 'CN';
 
 export interface MarketIndex {
   code: string;

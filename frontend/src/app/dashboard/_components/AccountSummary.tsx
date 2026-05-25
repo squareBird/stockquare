@@ -7,9 +7,8 @@ import { useQuery } from '@tanstack/react-query';
 import ChangeDisplay from '@/components/common/ChangeDisplay';
 import PriceDisplay from '@/components/common/PriceDisplay';
 import StaleBadge from '@/components/common/StaleBadge';
+import { useMarketPollingInterval } from '@/hooks/useMarketPolling';
 import { fetchAccountSummary } from '@/lib/api/portfolio';
-
-import { useMarketPollingInterval } from '../_hooks/useMarketPolling';
 
 interface SummaryRowProps {
   label: string;
@@ -40,9 +39,9 @@ export default function AccountSummary() {
   const showFullError = !data && isError;
 
   return (
-    <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+    <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
       <header className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
           Account Summary
         </h2>
         {showStaleBadge ? <StaleBadge /> : null}
