@@ -10,8 +10,8 @@ Route: `/dashboard`
 ┌─────────────────────────────────────────────────┐
 │  Header (Account Connection Status)             │
 ├──────────────────────┬──────────────────────────┤
-│  Account Summary     │  Market Index            │
-│                      │  (KOSPI / KOSDAQ)        │
+│  Account Summary     │  Market Index (tabbed)   │
+│                      │  KR • US • JP • CN       │
 ├──────────────────────┴──────────────────────────┤
 │  Watchlist                                      │
 │                                                 │
@@ -22,29 +22,31 @@ Route: `/dashboard`
 - Tablet (768–1023px): Same as desktop but with reduced padding.
 - Mobile (<768px): Single column, all sections stacked vertically.
 
-## 1. Account Connection Status
+## 1. Account Connection Status (moved to global Header)
 
-Displays the current KIS API account connection state. KIS authentication is handled entirely by the backend; the frontend only reflects status.
+The KIS connection dot + masked account number + REAL/MOCK mode pill now
+live in the **global Header** (`src/components/layout/Header.tsx`) that
+renders above every page via `app/layout.tsx`. The Dashboard page no
+longer renders an AccountStatus section directly — the Header provides
+it once per session.
 
-### States
+Global Header slots:
 
-| State | Display | Color |
-|-------|---------|-------|
-| `connected` | "Connected" + account number (masked: `****1234`) | `text-green-500` |
-| `disconnected` | "Disconnected" + reconnect message | `text-gray-400` |
-| `error` | "Connection Error" + error description | `text-red-500` |
+| Slot | Component | File |
+|------|-----------|------|
+| Brand wordmark / mobile monogram | inline in `Header.tsx` | `src/components/layout/Header.tsx` |
+| Primary nav tabs (Dashboard/Trading/Portfolio) | `NavTabs` | `src/components/layout/NavTabs.tsx` |
+| Connection dot + account number | `HeaderAccount` | `src/components/layout/HeaderAccount.tsx` |
+| REAL/MOCK pill | `ModeBadge` | `src/components/layout/ModeBadge.tsx` |
 
-### Component
+See `GOLDEN_RULE.md` alignment: the header is a global concern, not a
+per-page concern, so it lives under `components/layout/` rather than any
+page's `_components/`.
 
-```
-AccountStatus
-├── ConnectionIndicator (dot + label)
-└── AccountNumber (masked)
-```
+### API (still the source of truth)
 
-### API
-
-- `GET /api/v1/auth/status` → `{ status: 'connected' | 'disconnected' | 'error', account_number?: string, message?: string }`
+- `GET /api/v1/auth/status` → `{ status, account_number?, account_mode?, message? }`
+- `account_mode` is `'real'` or `'mock'` and drives the ModeBadge.
 
 ## 2. Account Summary Section
 
@@ -244,7 +246,45 @@ see deferred follow-ups for a future slot-counter UI.
 
 ## 4. Market Index Section
 
-Displays major Korean market indices (KOSPI, KOSDAQ).
+Tabbed card that displays market indices by country. The card is split
+into a tab strip (KR/US/JP/CN) and a panel body that swaps based on the
+active tab. Only the active tab runs a query, so polling cost scales with
+what the user is actually looking at — not with the number of supported
+countries.
+
+### Tabs
+
+| Tab | Indices | Backend status |
+|-----|---------|----------------|
+| KR (default) | KOSPI, KOSDAQ | Live — `/api/v1/market/indices` |
+| US | S&P 500, Dow, Nasdaq | Pending — skeleton panel |
+| JP | Nikkei 225, TOPIX | Pending — skeleton panel |
+| CN | Shanghai Composite, Hang Seng | Pending — skeleton panel |
+
+Non-KR tabs render `PendingMarketIndexPanel`, a static two-card skeleton
+with a one-line "Backend feed in progress" note. When the backend ships
+the `country` filter on `/market/indices`, each pending panel is replaced
+with a country-specific panel that mirrors `KRMarketIndexPanel`.
+
+### Polling & SWR rules
+
+- **Active tab only**: every panel owns its own `useQuery`. Switching
+  tabs unmounts the previous panel, which stops its refetch loop — this
+  is the native TanStack Query behavior for unobserved queries.
+- **Lazy fetch**: a tab's query does not run until its panel mounts.
+  First visit to a tab triggers the initial fetch.
+- **60s cadence**: MarketIndex refetches every 60 seconds via
+  `useMarketPollingInterval(60_000)` (vs. 30s for AccountSummary /
+  Watchlist / Portfolio holdings). Index values change slower than
+  portfolio numbers so the slower cadence is fine and keeps the KIS
+  call budget down.
+- **SWR**: `staleTime: 60_000` matches the refetch interval so
+  re-selecting a recently viewed tab uses cached data instead of
+  refetching.
+- **Market hours gating**: `useMarketPollingInterval` still returns
+  `false` outside Korean market hours. The US/JP/CN panels will need
+  their own market-hours helpers once they go live; KR reuses
+  `isMarketHours` from `lib/market-hours.ts`.
 
 ### Display Per Index
 
@@ -265,15 +305,16 @@ Same convention (red = gain, blue = loss, gray = zero).
 ### Component Tree
 
 ```
-MarketIndex
-├── IndexCard (KOSPI)              ← healthy indices
-│   ├── IndexName
-│   ├── IndexValue
-│   └── IndexChange (amount + rate, color-coded)
-└── DegradedIndexCard (KOSDAQ)     ← failed indices
-    ├── IndexName
-    ├── Error Code badge
-    └── "Lookup failed" + message
+MarketIndex                          ← shell: owns active-country state
+├── MarketIndexTabs                  ← KR/US/JP/CN tab strip (role=tablist)
+└── tabpanel (aria-labelledby=tab)
+    ├── KRMarketIndexPanel           ← when country === 'KR'
+    │   ├── StaleBadge               ← shown when cached + latest refetch failed
+    │   ├── IndexCard (KOSPI)
+    │   └── DegradedIndexCard (KOSDAQ)
+    └── PendingMarketIndexPanel      ← when country === 'US' | 'JP' | 'CN'
+        ├── 2x ghost card (animate-pulse)
+        └── "Backend feed in progress" caption
 ```
 
 ### Props
@@ -315,6 +356,9 @@ interface DegradedIndexCardProps {
 ### API
 
 - `GET /api/v1/market/indices` → `{ indices: MarketIndex[], errors: MarketIndexError[] }`
+  - Backend `country` query param is planned (KR/US/JP/CN). Current call
+    is unparameterized and implicitly returns KR; `fetchMarketIndices()`
+    will gain a `country` argument once the backend contract ships.
 
 ### Degraded Cards
 
@@ -326,8 +370,11 @@ as at least one index succeeds.
 
 ### State
 
-- Index data: Server state via TanStack Query. Query key: `['market', 'indices']`
-- Polling via TanStack Query (30s during market hours).
+- Index data: Server state via TanStack Query. Query key per country:
+  `['market', 'indices', 'KR']` (and `'US' | 'JP' | 'CN'` once live).
+- Polling: 60s during market hours, active tab only. Disabled outside
+  market hours via `useMarketPollingInterval(60_000)`.
+- Active tab: client state via `useState<Country>('KR')` in `MarketIndex.tsx`.
 
 ## 5. Components Summary
 
@@ -335,7 +382,6 @@ as at least one index succeeds.
 
 | Component | Type | Description |
 |-----------|------|-------------|
-| `AccountStatus` | Client | KIS account connection indicator |
 | `AccountSummary` | Client | Total assets and daily P&L |
 | `Watchlist` | Client | Full watchlist with sort/add/remove |
 | `WatchlistItem` | Client | Single stock row in watchlist |
@@ -343,7 +389,10 @@ as at least one index succeeds.
 | `AddStockModal` | Client | Search and add stock dialog |
 | `IndexCard` | Client | Single market index card (numeric only) |
 | `DegradedIndexCard` | Client | Market index card for a failed KIS lookup |
-| `MarketIndex` | Client | KOSPI + KOSDAQ index cards |
+| `MarketIndex` | Client | Tabbed shell — owns active country state |
+| `MarketIndexTabs` | Client | KR/US/JP/CN tab strip (role=tablist) |
+| `KRMarketIndexPanel` | Client | KR panel with KOSPI/KOSDAQ query (60s SWR) |
+| `PendingMarketIndexPanel` | Client | Skeleton panel for US/JP/CN awaiting backend |
 
 ### Shared (`components/common/`)
 
@@ -361,7 +410,8 @@ as at least one index succeeds.
 | Account summary | Server | TanStack Query | `['portfolio', 'summary']` |
 | Watchlist | Server | TanStack Query | `['watchlist']` |
 | Stock search | Server | TanStack Query | `['stocks', 'search', q]` |
-| Market indices | Server | TanStack Query | `['market', 'indices']` |
+| Market indices (KR) | Server | TanStack Query | `['market', 'indices', 'KR']` |
+| Market index active tab | Client | `useState` | `MarketIndex.tsx` local |
 | Sort preference | Client | Zustand | `useDashboardUI.sortKey` / `sortOrder` |
 | Add modal open | Local | `useState` | — |
 
@@ -425,7 +475,7 @@ Endpoints are organized by domain. The Dashboard UI composes data from multiple 
 | `/api/v1/watchlist/{item_id}` | DELETE | Remove stock by id | Invalidates `['watchlist']` |
 | `/api/v1/watchlist/reorder` | PATCH | Reorder `{ ids: number[] }` | Invalidates `['watchlist']` |
 | `/api/v1/stocks/search` | GET | Search stocks for add modal | On input (debounced 300ms) |
-| `/api/v1/market/indices` | GET | KOSPI/KOSDAQ index data | 30s (market hours) |
+| `/api/v1/market/indices` | GET | KR indices (KOSPI/KOSDAQ) | 60s (market hours, active tab only) |
 
 ### Polling Strategy
 

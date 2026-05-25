@@ -38,6 +38,9 @@ Lightweight search endpoint. Debouncing is the frontend's responsibility; the ba
 class StockMarket(str, Enum):
     KOSPI = "KOSPI"
     KOSDAQ = "KOSDAQ"
+    NASDAQ = "NASDAQ"
+    NYSE = "NYSE"
+    AMEX = "AMEX"
 
 class StockSearchItem(BaseModel):
     symbol: str
@@ -55,9 +58,31 @@ class StockSearchResponse(BaseModel):
 
 ### Behavior
 
-- When `q` is a valid 6-digit code, the backend attempts a direct `inquire-price` lookup first, then uses `search-info` to classify the market.
-- When `q` is text, the backend queries the KIS `search-info` endpoint and returns up to `limit` matches. (Phase 1 returns at most 1 item per KIS call — fuzzy multi-result search is a Phase 2 extension.)
-- Unknown symbols and KIS failures return `{"items": [], "count": 0}` rather than an error — the search box must never show a red failure state for a legitimate empty result.
+- When `q` is a valid 6-digit code, the backend attempts a direct `inquire-price` lookup first, then uses `search-info` to classify the market. This path stays on the live KIS quote API so the returned name is always the authoritative HTS name.
+- When `q` is text, the backend serves results from the in-memory Local Master Index (see below). Ranking is tier-based: exact symbol match, then exact name, then prefix, then substring; ties break on market order (KOSPI → KOSDAQ → NASDAQ → NYSE → AMEX). Search is case-insensitive and NFC-normalized. Up to `limit` rows are returned.
+- Unknown symbols, KIS failures, and empty-index states all return `{"items": [], "count": 0}` rather than an error — the search box must never show a red failure state for a legitimate empty result.
+
+### Local Master Index
+
+On startup the backend downloads five flat-file stock listings from the KIS public CDN and parses them into an in-memory index. There is no background refresh daemon in Phase 1 — the index is rebuilt only on process restart.
+
+**Source**: `https://new.real.download.dws.co.kr/common/master/`
+
+| Market | File | Format |
+|--------|------|--------|
+| KOSPI | `kospi_code.mst.zip` | CP949, fixed-width lines |
+| KOSDAQ | `kosdaq_code.mst.zip` | CP949, fixed-width lines |
+| NASDAQ | `nasmst.cod.zip` | CP949, tab-delimited |
+| NYSE | `nysmst.cod.zip` | CP949, tab-delimited |
+| AMEX | `amsmst.cod.zip` | CP949, tab-delimited |
+
+**On-disk cache**: parsed rows are persisted to `backend/.cache/kis_master/{market}.jsonl` with a 24-hour TTL. Restarts within that window skip the download and load from disk.
+
+**Known limitations**:
+- The KR master files do not publish an English name column, so an English-language query such as `"samsung"` does not match `005930` via the KR rows. Users searching in English for a KR stock will get zero results. Users typing `"삼성"` or `"005930"` work as expected.
+- Halted / delisted filtering is deferred — the Part 2 suspension flags are not yet parsed, so a handful of inactive symbols may appear in search results until the next snapshot drops them.
+- US security-type filtering keeps only common stock (column 8 == `"2"`). Warrants, preferred, and ETFs with a different type flag are excluded from search.
+- No Korean 초성 (initial consonant) search and no romanization (e.g. `"samseong"`). Out of scope for Phase 1.
 
 ### KIS API Mapping
 
@@ -91,6 +116,8 @@ KIS market code mapping:
 |-----------|------|-------|
 | Stocks endpoints | `app/api/v1/stocks.py` | api |
 | Stocks service | `app/services/stocks.py` | services |
+| Stock master index | `app/services/stock_index.py` | services |
+| KIS master parsers | `app/kis/master.py` | kis |
 | KIS client | `app/kis/client.py` | kis |
 | KIS response models | `app/kis/models.py` | kis |
 
@@ -99,3 +126,6 @@ KIS market code mapping:
 - `GET /api/v1/stocks/{symbol}` — Single-stock detail (current price, volume, 52-week range, fundamentals)
 - `GET /api/v1/stocks/{symbol}/history?period=1m` — Historical OHLCV series
 - `GET /api/v1/stocks/{symbol}/news` — News sentiment feed
+- Background daemon that refreshes the Local Master Index on a schedule instead of only at startup
+- Halted / delisted filtering driven by the Part 2 suspension flags in the KR master files
+- Conditional GET (`If-Modified-Since`) against the master-file CDN so the daily refresh is a no-op on unchanged days

@@ -152,7 +152,88 @@ Query:
 | Domain response model | `app/models/portfolio.py` (or inline in router) | models |
 | Exception classes | `app/core/exceptions.py` | core |
 
-## 4. Phase 2 Extensions (placeholder, not implemented)
+## 4. Holdings API
 
-- `GET /api/v1/portfolio/holdings` — Detailed holdings list with per-symbol P&L
+### GET /api/v1/portfolio/holdings
+
+Returns a per-symbol list of the authenticated account's current stock
+holdings with live price data and realized purchase context. Used by the
+Portfolio page for the "내 보유 종목" table and by the Dashboard holdings
+drawer.
+
+**Response (full success)**:
+```json
+{
+  "holdings": [
+    {
+      "symbol": "005930",
+      "name": "삼성전자",
+      "quantity": 10,
+      "avg_purchase_price": 71000,
+      "current_price": 72300,
+      "evaluation_amount": 723000,
+      "purchase_amount": 710000,
+      "profit": 13000,
+      "profit_rate": 1.83
+    }
+  ],
+  "errors": [],
+  "count": 1
+}
+```
+
+**Empty portfolio** (no holdings but KIS call succeeded):
+```json
+{ "holdings": [], "errors": [], "count": 0 }
+```
+
+**Response Model**:
+```python
+class Holding(BaseModel):
+    symbol: str
+    name: str                    # Live Korean name from KIS (hts_kor_isnm / prdt_name)
+    quantity: int
+    avg_purchase_price: int      # KRW, integer (KIS returns fractional but we floor)
+    current_price: int           # KRW
+    evaluation_amount: int       # quantity × current_price
+    purchase_amount: int         # quantity × avg_purchase_price
+    profit: int                  # evaluation_amount − purchase_amount
+    profit_rate: float           # (profit / purchase_amount) * 100
+
+class HoldingsResponse(BaseModel):
+    holdings: list[Holding]
+    errors: list[PortfolioFieldError]  # reused from summary schema
+    count: int                   # len(holdings) + len(errors)
+```
+
+### KIS API Mapping
+
+Holdings come from the same `inquire-balance` call used by the summary
+endpoint — the `output1` array contains one row per held symbol. No extra
+KIS traffic beyond the single call.
+
+| Field | KIS Endpoint | tr_id (Real/Mock) | KIS Field |
+|-------|-------------|-------------------|-----------|
+| symbol | `/uapi/domestic-stock/v1/trading/inquire-balance` | `TTTC8434R` / `VTTC8434R` | `pdno` |
+| name | Same | Same | `prdt_name` |
+| quantity | Same | Same | `hldg_qty` |
+| avg_purchase_price | Same | Same | `pchs_avg_pric` |
+| current_price | Same | Same | `prpr` |
+| evaluation_amount | Same | Same | `evlu_amt` |
+| purchase_amount | Same | Same | `pchs_amt` |
+| profit | Same | Same | `evlu_pfls_amt` |
+| profit_rate | Same | Same | `evlu_pfls_rt` |
+
+### Degradation Behavior
+
+- KIS call succeeds → `holdings[]` populated, `errors[]` empty, 200 OK.
+- KIS call fails (any reason — 5xx, timeout, network) → `holdings[]` empty,
+  `errors[]` contains a single `PortfolioFieldError(field="holdings", ...)`
+  entry, HTTP 502 (full failure).
+- KIS call succeeds but returns an empty `output1` array → `holdings[]`
+  empty, `errors[]` empty, 200 OK with `count: 0`.
+- KIS credentials missing → 503 `KIS_NOT_CONFIGURED` (fail-fast).
+
+## 5. Phase 2 Extensions (placeholder, not implemented)
+
 - `GET /api/v1/portfolio/history` — Historical P&L series for charting
