@@ -47,6 +47,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stockquare}:${POSTGRES_PASSWORD:-stockquare}@postgres:5432/${POSTGRES_DB:-stockquare}
       APP_ENV: development
       LOG_LEVEL: INFO
+      # Phase 2 trading safety gates — explicit so .env can't silently
+      # downgrade them. Captain confirmed REAL-mode deploy with the
+      # 50,000 KRW per-order notional cap still enforced.
+      TRADING_REAL_MODE_ENABLED: "true"
+      TRADING_MAX_ORDER_AMOUNT: "50000"
     ports:
       - "8000:8000"
     depends_on:
