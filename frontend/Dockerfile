@@ -6,7 +6,7 @@
 #   3. runner  — minimal runtime image that serves the standalone bundle
 
 # ---------- Stage 1: deps ----------
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 
 # libc6-compat keeps some native dependencies happy on Alpine.
 RUN apk add --no-cache libc6-compat
@@ -17,14 +17,15 @@ WORKDIR /app
 RUN corepack enable
 
 # Only copy the files needed to resolve dependencies so the layer cache
-# stays warm across unrelated source changes.
-COPY package.json pnpm-lock.yaml* ./
+# stays warm across unrelated source changes. pnpm-workspace.yaml carries
+# the `allowBuilds` approvals for sharp / unrs-resolver native postinstalls.
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
 
 RUN pnpm install --frozen-lockfile
 
 
 # ---------- Stage 2: builder ----------
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -46,7 +47,7 @@ RUN pnpm build
 
 
 # ---------- Stage 3: runner ----------
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
