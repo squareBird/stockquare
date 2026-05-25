@@ -26,9 +26,10 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 # Pop any ambient CORS_ORIGINS so Settings-default tests are deterministic.
 os.environ.pop("CORS_ORIGINS", None)
 
-from app.api.deps import get_db_session, get_kis_client  # noqa: E402
+from app.api.deps import get_db_session, get_kis_client, get_stock_index  # noqa: E402
 from app.db.models import Base  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services.stock_index import StockMasterIndex  # noqa: E402
 
 
 class FakeKISClient:
@@ -40,6 +41,10 @@ class FakeKISClient:
         self.inquire_account_summary = AsyncMock()
         self.inquire_index = AsyncMock()
         self.search_info = AsyncMock()
+        # Trading — Phase 2
+        self.order_cash = AsyncMock()
+        self.order_revise_cancel = AsyncMock()
+        self.inquire_daily_ccld = AsyncMock()
         self.token_manager = _FakeTokenManager()
 
     async def close(self) -> None:  # pragma: no cover - not exercised
@@ -71,6 +76,12 @@ def fake_kis_client() -> FakeKISClient:
     return FakeKISClient()
 
 
+@pytest.fixture
+def stock_index() -> StockMasterIndex:
+    """Fresh in-memory index. Tests seed rows they care about via ``replace``."""
+    return StockMasterIndex()
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -86,6 +97,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 async def app_client(
     fake_kis_client: FakeKISClient,
     db_session: AsyncSession,
+    stock_index: StockMasterIndex,
 ) -> AsyncIterator[AsyncClient]:
     app = create_app()
 
@@ -100,8 +112,12 @@ async def app_client(
     def _override_kis():
         return fake_kis_client
 
+    def _override_stock_index():
+        return stock_index
+
     app.dependency_overrides[get_db_session] = _override_session
     app.dependency_overrides[get_kis_client] = _override_kis
+    app.dependency_overrides[get_stock_index] = _override_stock_index
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -112,11 +128,12 @@ async def app_client(
 
 @pytest.fixture(autouse=True)
 def _patch_init_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Skip init_db side-effects during app creation in tests."""
+    """Skip init_db + master-file refresh side-effects in tests."""
     from app import main as main_module
 
-    async def _noop() -> None:
+    async def _noop(*args: Any, **kwargs: Any) -> None:
         return None
 
     monkeypatch.setattr(main_module, "init_db", _noop)
+    monkeypatch.setattr(main_module, "refresh_stock_master_index", _noop)
     yield

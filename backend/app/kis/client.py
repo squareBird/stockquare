@@ -15,7 +15,9 @@ from app.core.exceptions import InvalidSymbolError, KISAPIError, TokenExpiredErr
 from app.kis.models import (
     AccountBalanceResponse,
     AccountSummaryResponse,
+    DailyCcldResponse,
     IndexResponse,
+    OrderCashResponse,
     SearchInfoResponse,
     StockPriceResponse,
 )
@@ -283,5 +285,140 @@ class KISClient:
             "/uapi/domestic-stock/v1/quotations/search-info",
             tr_id="CTPF1002R",
             response_model=SearchInfoResponse,
+            params=params,
+        )
+
+    # ------------------------------------------------------------------
+    # Trading — order placement / cancel / modify / history
+    # ------------------------------------------------------------------
+
+    async def order_cash(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: int,
+        order_type: str,
+    ) -> OrderCashResponse:
+        """Place a domestic-stock cash order.
+
+        `side` is `"buy"` or `"sell"`; `order_type` is `"limit"` or
+        `"market"`. The KIS `ORD_DVSN` is derived from `order_type`:
+        `"00"` for limit, `"01"` for market. Market orders send
+        `ORD_UNPR="0"` regardless of the passed price.
+        """
+        if side == "buy":
+            tr_id = _tr_id("TTTC0802U", "VTTC0802U", self._settings.kis_account_mode)
+        elif side == "sell":
+            tr_id = _tr_id("TTTC0801U", "VTTC0801U", self._settings.kis_account_mode)
+        else:
+            raise ValueError(f"Unknown order side: {side!r}")
+
+        ord_dvsn = "01" if order_type == "market" else "00"
+        ord_unpr = "0" if order_type == "market" else str(price)
+
+        body = {
+            "CANO": self._settings.kis_account_no,
+            "ACNT_PRDT_CD": self._settings.kis_account_product_code,
+            "PDNO": symbol,
+            "ORD_DVSN": ord_dvsn,
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": ord_unpr,
+        }
+        return await self._request(
+            "POST",
+            "/uapi/domestic-stock/v1/trading/order-cash",
+            tr_id=tr_id,
+            response_model=OrderCashResponse,
+            body=body,
+        )
+
+    async def order_revise_cancel(
+        self,
+        *,
+        krx_fwdg_ord_orgno: str,
+        original_order_id: str,
+        operation: str,
+        quantity: int = 0,
+        price: int = 0,
+        order_type: str = "limit",
+    ) -> OrderCashResponse:
+        """Modify or cancel a previously submitted order.
+
+        `operation` is `"modify"` or `"cancel"`. For cancel, quantity/price
+        are ignored (KIS expects `ORD_QTY="0"`, `QTY_ALL_ORD_YN="Y"`).
+        """
+        tr_id = _tr_id("TTTC0803U", "VTTC0803U", self._settings.kis_account_mode)
+        rvse_cncl_dvsn_cd = "02" if operation == "cancel" else "01"
+        ord_dvsn = "01" if order_type == "market" else "00"
+
+        if operation == "cancel":
+            body = {
+                "CANO": self._settings.kis_account_no,
+                "ACNT_PRDT_CD": self._settings.kis_account_product_code,
+                "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                "ORGN_ODNO": original_order_id,
+                "ORD_DVSN": ord_dvsn,
+                "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,
+                "ORD_QTY": "0",
+                "ORD_UNPR": "0",
+                "QTY_ALL_ORD_YN": "Y",
+            }
+        else:
+            body = {
+                "CANO": self._settings.kis_account_no,
+                "ACNT_PRDT_CD": self._settings.kis_account_product_code,
+                "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                "ORGN_ODNO": original_order_id,
+                "ORD_DVSN": ord_dvsn,
+                "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,
+                "ORD_QTY": str(quantity),
+                "ORD_UNPR": str(price),
+                "QTY_ALL_ORD_YN": "N",
+            }
+        return await self._request(
+            "POST",
+            "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+            tr_id=tr_id,
+            response_model=OrderCashResponse,
+            body=body,
+        )
+
+    async def inquire_daily_ccld(
+        self,
+        *,
+        from_date: str,
+        to_date: str,
+    ) -> DailyCcldResponse:
+        """Fetch the account's daily execution / order history.
+
+        `from_date` / `to_date` are `YYYYMMDD` strings. KIS supports up
+        to ~90 days of history per call in real mode. Beyond 3 months
+        requires a different tr_id (`CTSC9215R` / `VTSC9215R`), which is
+        out of scope for Phase 2.
+        """
+        tr_id = _tr_id("TTTC0081R", "VTTC0081R", self._settings.kis_account_mode)
+        params = {
+            "CANO": self._settings.kis_account_no,
+            "ACNT_PRDT_CD": self._settings.kis_account_product_code,
+            "INQR_STRT_DT": from_date,
+            "INQR_END_DT": to_date,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        return await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            tr_id=tr_id,
+            response_model=DailyCcldResponse,
             params=params,
         )

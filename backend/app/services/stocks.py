@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from app.core.exceptions import InvalidQueryError, InvalidSymbolError, KISAPIError
 from app.kis.client import KISClient
+from app.services.stock_index import StockMasterIndex, StockMasterRow
 
 logger = logging.getLogger(__name__)
 
@@ -34,58 +35,66 @@ def _classify_market(code: str) -> str:
     return _KIS_MARKET_CODE_MAP.get(code, "KOSPI")
 
 
+def _display_name(row: StockMasterRow) -> str:
+    """Prefer Korean name, fall back to English, then to the ticker."""
+    if row.name_ko:
+        return row.name_ko
+    if row.name_en:
+        return row.name_en
+    return row.symbol
+
+
 class StocksService:
     """Business logic for stock search / metadata lookups."""
 
-    def __init__(self, kis: KISClient) -> None:
+    def __init__(self, kis: KISClient, index: StockMasterIndex) -> None:
         self._kis = kis
+        self._index = index
 
     async def search_stocks(self, query: str, limit: int) -> list[StockSearchItem]:
         query = query.strip()
         if not query:
             raise InvalidQueryError()
 
-        items: list[StockSearchItem] = []
+        # 6-digit KR codes go through the live KIS quote path so we
+        # return the authoritative HTS name from inquire-price rather
+        # than the master-file snapshot (which can lag a day).
         if SYMBOL_PATTERN.match(query):
-            try:
-                price_resp = await self._kis.inquire_stock_price(query)
-            except InvalidSymbolError:
-                return []
-            # Use search_info for a reliable market classification.
-            market = "KOSPI"
-            try:
-                info_resp = await self._kis.search_info(query)
-                if info_resp.rt_cd == "0":
-                    market = _classify_market(info_resp.output.market_code)
-            except KISAPIError as exc:
-                logger.warning(
-                    "stock search-info lookup failed",
-                    extra={"symbol": query, "exc_type": type(exc).__name__},
-                )
-            items.append(
-                StockSearchItem(
-                    symbol=query,
-                    name=price_resp.output.name or query,
-                    market=market,
-                )
-            )
-            return items[:limit]
+            return await self._search_kr_symbol(query, limit)
 
-        # Text query: KIS search-info returns a single product by name match.
-        # Phase 1 delegates richer fuzzy search to a later phase.
+        # Text queries are served from the in-memory index. If the
+        # startup refresh failed, the index is empty and we return an
+        # empty list rather than a 502 — the search box must never
+        # show a red error state for a legitimate empty result.
+        rows = self._index.search(query, limit)
+        return [
+            StockSearchItem(
+                symbol=row.symbol,
+                name=_display_name(row),
+                market=row.market.value,
+            )
+            for row in rows
+        ]
+
+    async def _search_kr_symbol(self, query: str, limit: int) -> list[StockSearchItem]:
         try:
-            resp = await self._kis.search_info(query)
-            if resp.rt_cd == "0" and resp.output.symbol:
-                items.append(
-                    StockSearchItem(
-                        symbol=resp.output.symbol,
-                        name=resp.output.name,
-                        market=_classify_market(resp.output.market_code),
-                    )
-                )
+            price_resp = await self._kis.inquire_stock_price(query)
+        except InvalidSymbolError:
+            return []
+        # Use search_info for a reliable market classification.
+        market = "KOSPI"
+        try:
+            info_resp = await self._kis.search_info(query)
+            if info_resp.rt_cd == "0":
+                market = _classify_market(info_resp.output.market_code)
         except KISAPIError as exc:
             logger.warning(
-                "stock search failed",
-                extra={"query": query, "exc_type": type(exc).__name__},
+                "stock search-info lookup failed",
+                extra={"symbol": query, "exc_type": type(exc).__name__},
             )
-        return items[:limit]
+        item = StockSearchItem(
+            symbol=query,
+            name=price_resp.output.name or query,
+            market=market,
+        )
+        return [item][:limit]

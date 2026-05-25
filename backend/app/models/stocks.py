@@ -10,6 +10,9 @@ from pydantic import BaseModel
 class StockMarket(str, Enum):
     KOSPI = "KOSPI"
     KOSDAQ = "KOSDAQ"
+    NASDAQ = "NASDAQ"
+    NYSE = "NYSE"
+    AMEX = "AMEX"
 
 
 class StockSearchItemResponse(BaseModel):

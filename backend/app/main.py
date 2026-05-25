@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,6 +17,7 @@ from app.core.config import get_settings, log_credential_status
 from app.core.exceptions import StockquareError
 from app.db.session import init_db
 from app.kis.client import KISClient
+from app.services.stock_index import StockMasterIndex, refresh_stock_master_index
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log_credential_status(settings)
     await init_db()
     app.state.kis_client = KISClient(settings=settings)
+
+    # Master-file CDN lives on a different host from the KIS API, so we
+    # use a dedicated short-lived httpx client with a 30s timeout — each
+    # zip is a few megabytes and is fetched exactly once on startup.
+    app.state.stock_index = StockMasterIndex()
+    cache_dir = Path(__file__).resolve().parent.parent / ".cache" / "kis_master"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    master_http = httpx.AsyncClient(timeout=30.0)
+    try:
+        await refresh_stock_master_index(master_http, app.state.stock_index, cache_dir)
+    except Exception:
+        logger.warning("stock master refresh failed", exc_info=True)
+    finally:
+        await master_http.aclose()
+
     try:
         yield
     finally:

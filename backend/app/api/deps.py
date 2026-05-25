@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session_factory
 from app.kis.client import KISClient
+from app.services.stock_index import StockMasterIndex
 
 
 def get_kis_client(request: Request) -> KISClient:
@@ -22,6 +23,19 @@ def get_kis_client(request: Request) -> KISClient:
     if client is None:
         raise RuntimeError("KIS client is not initialized on app.state")
     return client
+
+
+def get_stock_index(request: Request) -> StockMasterIndex:
+    """Return the StockMasterIndex bound to the running app.
+
+    Like :func:`get_kis_client`, the lifespan handler constructs the
+    index on startup and tests override this dependency to inject a
+    pre-seeded index so they don't hit the public master-file CDN.
+    """
+    index: StockMasterIndex | None = getattr(request.app.state, "stock_index", None)
+    if index is None:
+        raise RuntimeError("Stock master index is not initialized on app.state")
+    return index
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:

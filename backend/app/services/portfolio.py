@@ -6,12 +6,31 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from app.core.exceptions import StockquareError
+from app.core.exceptions import KISAPIError, StockquareError
 from app.kis.client import KISClient
 from app.kis.models import AccountBalanceResponse, AccountSummaryResponse
 from app.services._helpers import to_float, to_int
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Holding:
+    symbol: str
+    name: str
+    quantity: int
+    avg_purchase_price: int
+    current_price: int
+    evaluation_amount: int
+    purchase_amount: int
+    profit: int
+    profit_rate: float
+
+
+@dataclass
+class HoldingsResult:
+    holdings: list[Holding]
+    errors: list[PortfolioFieldFailure]
 
 
 @dataclass
@@ -154,3 +173,61 @@ def _classify_error(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, StockquareError):
         return exc.code, exc.message
     return "UNKNOWN_ERROR", type(exc).__name__
+
+
+# ---------------------------------------------------------------------------
+# Holdings — per-symbol detail view
+# ---------------------------------------------------------------------------
+
+
+class PortfolioHoldingsService:
+    """Business logic for the per-symbol holdings list.
+
+    Reuses the `inquire-balance` KIS call (same one that feeds
+    `PortfolioService.get_account_summary`) but projects `output1` rows
+    into the richer `Holding` view instead of just counting them.
+    """
+
+    def __init__(self, kis: KISClient) -> None:
+        self._kis = kis
+
+    async def get_holdings(self) -> HoldingsResult:
+        try:
+            balance_resp = await self._kis.inquire_balance()
+        except KISAPIError as exc:
+            error_code, message = _classify_error(exc)
+            logger.warning(
+                "portfolio holdings fetch failed",
+                extra={"error_code": error_code},
+            )
+            return HoldingsResult(
+                holdings=[],
+                errors=[
+                    PortfolioFieldFailure(
+                        field="holdings",
+                        error_code=error_code,
+                        message=message,
+                    )
+                ],
+            )
+
+        holdings: list[Holding] = []
+        for row in balance_resp.output1:
+            quantity = to_int(row.quantity)
+            if quantity <= 0:
+                # Fully liquidated rows can linger in KIS responses.
+                continue
+            holdings.append(
+                Holding(
+                    symbol=row.symbol,
+                    name=row.name or row.symbol,
+                    quantity=quantity,
+                    avg_purchase_price=to_int(row.avg_purchase_price),
+                    current_price=to_int(row.current_price),
+                    evaluation_amount=to_int(row.evaluation_amount),
+                    purchase_amount=to_int(row.purchase_amount),
+                    profit=to_int(row.profit),
+                    profit_rate=to_float(row.profit_rate),
+                )
+            )
+        return HoldingsResult(holdings=holdings, errors=[])

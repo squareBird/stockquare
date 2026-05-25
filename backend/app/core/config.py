@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development")
     log_level: str = Field(default="INFO")
 
+    # Trading safety gates — Phase 2. `trading_real_mode_enabled` gates
+    # order placement when KIS_ACCOUNT_MODE=real; flip to `false` to let
+    # the backend run in real mode for read-only endpoints while blocking
+    # order mutations entirely. `trading_max_order_amount` caps the KRW
+    # value of any single order (quantity × price) — orders above this
+    # limit are rejected before touching KIS. Both env vars are read by
+    # the trading service's pre-flight check.
+    trading_real_mode_enabled: bool = Field(default=True)
+    trading_max_order_amount: int = Field(default=50_000)
+
     # CORS — comma-separated list via `CORS_ORIGINS` env var, e.g.
     # `CORS_ORIGINS=http://localhost:3000,https://stockquare.app`.
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])

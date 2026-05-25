@@ -51,6 +51,12 @@ class AccountBalanceHolding(BaseModel):
     symbol: str = Field(alias="pdno", default="")
     name: str = Field(alias="prdt_name", default="")
     quantity: str = Field(alias="hldg_qty", default="0")
+    avg_purchase_price: str = Field(alias="pchs_avg_pric", default="0")
+    current_price: str = Field(alias="prpr", default="0")
+    evaluation_amount: str = Field(alias="evlu_amt", default="0")
+    purchase_amount: str = Field(alias="pchs_amt", default="0")
+    profit: str = Field(alias="evlu_pfls_amt", default="0")
+    profit_rate: str = Field(alias="evlu_pfls_rt", default="0")
 
     model_config = {"populate_by_name": True}
 
@@ -152,3 +158,61 @@ class MarketStatus(str, Enum):
     CLOSED = "closed"
     PRE_MARKET = "pre_market"
     POST_MARKET = "post_market"
+
+
+# ---------------------------------------------------------------------------
+# Trading — KIS order-cash / order-rvsecncl / inquire-daily-ccld envelopes
+# ---------------------------------------------------------------------------
+
+
+class OrderCashOutput(BaseModel):
+    """KIS `order-cash` output.
+
+    `KRX_FWDG_ORD_ORGNO` is the KRX branch office code (5 digits) and
+    `ODNO` is the order number (10 digits). The pair together identifies
+    an order for later cancel/modify calls.
+    """
+
+    krx_fwdg_ord_orgno: str = Field(alias="KRX_FWDG_ORD_ORGNO", default="")
+    odno: str = Field(alias="ODNO", default="")
+    ord_tmd: str = Field(alias="ORD_TMD", default="")
+
+    model_config = {"populate_by_name": True}
+
+
+class OrderCashResponse(BaseModel):
+    """Envelope for order-cash + order-rvsecncl."""
+
+    rt_cd: str
+    msg_cd: str | None = None
+    msg1: str | None = None
+    output: OrderCashOutput | None = None
+
+
+class DailyCcldOutput(BaseModel):
+    """Single row from inquire-daily-ccld output1."""
+
+    order_id: str = Field(alias="odno", default="")
+    origin_order_id: str = Field(alias="orgn_odno", default="")
+    branch_office: str = Field(alias="ord_gno_brno", default="")
+    symbol: str = Field(alias="pdno", default="")
+    name: str = Field(alias="prdt_name", default="")
+    side_code: str = Field(alias="sll_buy_dvsn_cd", default="")
+    order_type_code: str = Field(alias="ord_dvsn_cd", default="")
+    order_quantity: str = Field(alias="ord_qty", default="0")
+    filled_quantity: str = Field(alias="tot_ccld_qty", default="0")
+    order_price: str = Field(alias="ord_unpr", default="0")
+    filled_price: str = Field(alias="avg_prvs", default="0")
+    order_time: str = Field(alias="ord_tmd", default="")
+    cancel_yn: str = Field(alias="cncl_yn", default="N")
+
+    model_config = {"populate_by_name": True}
+
+
+class DailyCcldResponse(BaseModel):
+    """Envelope for inquire-daily-ccld."""
+
+    rt_cd: str
+    msg_cd: str | None = None
+    msg1: str | None = None
+    output1: list[DailyCcldOutput] = Field(default_factory=list)

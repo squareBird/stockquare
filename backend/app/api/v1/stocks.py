@@ -6,20 +6,24 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import get_kis_client
+from app.api.deps import get_kis_client, get_stock_index
 from app.kis.client import KISClient
 from app.models.stocks import (
     StockMarket,
     StockSearchItemResponse,
     StockSearchResponse,
 )
+from app.services.stock_index import StockMasterIndex
 from app.services.stocks import StocksService
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
 
-def _get_service(kis: KISClient = Depends(get_kis_client)) -> StocksService:
-    return StocksService(kis=kis)
+def _get_service(
+    kis: KISClient = Depends(get_kis_client),
+    index: StockMasterIndex = Depends(get_stock_index),
+) -> StocksService:
+    return StocksService(kis=kis, index=index)
 
 
 @router.get("/search", response_model=StockSearchResponse)

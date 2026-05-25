@@ -107,3 +107,61 @@ class InvalidQueryError(StockquareError):
 
     def __init__(self) -> None:
         super().__init__("Search query must not be empty")
+
+
+# ---------------------------------------------------------------------------
+# Trading — Phase 2 safety gates and KIS error surfaces
+# ---------------------------------------------------------------------------
+
+
+class TradingDisabledError(StockquareError):
+    """Order placement blocked by `TRADING_REAL_MODE_ENABLED=false`.
+
+    Raised when the deployment is running in real mode but the operator
+    has explicitly disabled order mutations. Read-only KIS endpoints stay
+    functional.
+    """
+
+    code: ClassVar[str] = "TRADING_DISABLED"
+    http_status: ClassVar[int] = 403
+
+    def __init__(self) -> None:
+        super().__init__("Trading is disabled on this deployment")
+
+
+class OrderAmountExceededError(StockquareError):
+    """Order's total KRW value exceeds `TRADING_MAX_ORDER_AMOUNT`."""
+
+    code: ClassVar[str] = "ORDER_AMOUNT_EXCEEDED"
+    http_status: ClassVar[int] = 400
+
+    def __init__(self, amount: int, limit: int) -> None:
+        self.amount = amount
+        self.limit = limit
+        super().__init__(f"Order amount {amount} KRW exceeds the configured cap {limit} KRW")
+
+
+class OrderNotFoundError(StockquareError):
+    """Order id not found in KIS (likely already filled / cancelled)."""
+
+    code: ClassVar[str] = "ORDER_NOT_FOUND"
+    http_status: ClassVar[int] = 404
+
+    def __init__(self, order_id: str) -> None:
+        super().__init__(f"Order not found: {order_id}")
+
+
+class OrderFailedError(StockquareError):
+    """KIS rejected the order (insufficient balance, price limit, etc).
+
+    Carries the KIS `msg_cd`/`msg1` so the frontend can surface the
+    actionable rejection reason to the user without the backend having
+    to translate the entire KIS error dictionary.
+    """
+
+    code: ClassVar[str] = "ORDER_FAILED"
+    http_status: ClassVar[int] = 400
+
+    def __init__(self, message: str, kis_msg_cd: str | None = None) -> None:
+        self.kis_msg_cd = kis_msg_cd
+        super().__init__(message)
