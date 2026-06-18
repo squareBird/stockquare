@@ -41,6 +41,7 @@ class FakeKISClient:
         self.inquire_account_summary = AsyncMock()
         self.inquire_index = AsyncMock()
         self.search_info = AsyncMock()
+        self.inquire_daily_itemchartprice = AsyncMock()
         # Trading — Phase 2
         self.order_cash = AsyncMock()
         self.order_revise_cancel = AsyncMock()

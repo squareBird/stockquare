@@ -1,1 +1,194 @@
 # Charts Spec
+
+Price charts shown inside a **stock detail modal** that opens whenever the user
+clicks a symbol anywhere in the app. The chart is a candlestick + volume view
+rendered with TradingView's **lightweight-charts**. The modal — not a dedicated
+route — is the entry point, so charting layers on top of the existing
+Dashboard / Portfolio pages without adding a nav tab.
+
+> **Data prerequisite**: this depends on `GET /api/v1/stocks/{symbol}/history`,
+> currently a Phase 2 placeholder in backend `STOCKS.md`. That endpoint (the
+> same OHLCV source the Strategy engine uses — see backend `STRATEGY.md` §6)
+> must exist before charts can render real data. Until then `PriceChart`
+> renders against the mock adapter in `lib/api/mock.ts`.
+
+## Entry points
+
+A single global modal, driven by a Zustand store holding the `activeSymbol`.
+Any of these click targets call `openStockDetail(symbol)`:
+
+- Dashboard `WatchlistItem` (and `DegradedWatchlistItem`)
+- `AddStockModal` / `SymbolPicker` search result row
+- Portfolio `HoldingRow`
+
+The modal is mounted once near the root (in `providers.tsx` or the root
+layout's client shell) so it is reachable from every page.
+
+## Layout (modal)
+
+```
+┌───────────────────────────────────────────────┐
+│  삼성전자  005930 · KOSPI            [Close]  │  header
+│  ₩72,000   ▲ +1,200 (+1.69%)                 │  current price (ChangeDisplay)
+├───────────────────────────────────────────────┤
+│  [1D] [1W] [1M] [3M] [1Y]                     │  period toggle
+├───────────────────────────────────────────────┤
+│                                                │
+│            candlestick series                  │  PriceChart
+│            ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄                  │
+│            volume histogram                    │
+│                                                │
+├───────────────────────────────────────────────┤
+│  [관심종목 추가]            [주문하기 →]       │  quick actions
+└───────────────────────────────────────────────┘
+```
+
+Bottom sheet on mobile (`items-end`, `rounded-t-2xl`), centered dialog on
+`md:` and up — same responsive shell as `AddStockModal`.
+
+## 1. StockDetailModal
+
+The container. Follows the exact a11y pattern already used by
+`AddStockModal`:
+
+- `role="dialog"`, `aria-modal="true"`, `aria-label` with the symbol.
+- Backdrop is a `<button tabIndex={-1} aria-hidden="true">`; pointer users
+  dismiss by clicking it, keyboard users via Escape or the visible Close
+  button.
+- Closing clears `activeSymbol` in the store.
+
+Sections: header (name + symbol + market + live price), period toggle,
+`PriceChart`, and a quick-actions row. The header price reuses
+`PriceDisplay` + `ChangeDisplay` from `components/common/` and shares the
+`['stocks', symbol, 'price']` query with the rest of the app.
+
+## 2. PriceChart (lightweight-charts)
+
+Wraps a `lightweight-charts` chart instance.
+
+- **Candlestick series** for OHLC + a **volume histogram** on a secondary
+  price scale.
+- **Korean color convention** (matches the app's `gain` / `loss` tokens):
+  up candles **red**, down candles **blue**. lightweight-charts defaults to
+  green/red, so `upColor` / `downColor` / `wickUpColor` / `wickDownColor`
+  must be set explicitly to the brand red/blue. Volume bars tint with the
+  same up/down color at reduced opacity.
+- `'use client'`, and the chart module is loaded via `next/dynamic` with
+  `ssr: false` (lightweight-charts touches `window`/`document` on import).
+- A `ResizeObserver` keeps the chart width in sync with the modal; the chart
+  instance is created in a `useEffect` and `remove()`d on cleanup to avoid
+  leaks across symbol switches.
+- Loading / error / empty states mirror the card pattern used elsewhere:
+  skeleton while fetching, a stale badge if cached data is shown during a
+  refetch, and a Korean "차트 데이터를 불러올 수 없습니다" message on full
+  failure.
+
+## 3. Period selector
+
+A small pill toggle. Each period maps to a backend `period` value and a
+candle granularity:
+
+| Pill | `period` param | Granularity | Source tr_id (backend) |
+|------|----------------|-------------|------------------------|
+| 1D   | `1d`  | minute candles (intraday) | `FHKST03010200` |
+| 1W   | `1w`  | daily | `FHKST03010100` |
+| 1M   | `1m`  | daily | `FHKST03010100` |
+| 3M   | `3m`  | daily | `FHKST03010100` |
+| 1Y   | `1y`  | daily / weekly | `FHKST03010100` |
+
+Default `1m`. Switching periods changes the query key, so each period's data
+is cached independently.
+
+## 4. Data / API integration
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/stocks/{symbol}/history?period=` | GET | OHLCV candle series for the chart |
+| `/api/v1/stocks/{symbol}/price` (or `/auth`-shared price) | GET | Header current price + change |
+
+Expected history response (the contract `STOCKS.md` should formalize):
+```json
+{
+  "symbol": "005930",
+  "period": "1m",
+  "candles": [
+    { "time": "2026-05-02", "open": 71000, "high": 72500, "low": 70800, "close": 72000, "volume": 12345678 }
+  ]
+}
+```
+
+Query key: `['stocks', symbol, 'history', period]`. Polling: during KRX market
+hours the chart may refetch the latest candle on the shared
+`useMarketPollingInterval` (Phase 2); Phase 1 fetches once per open.
+
+## 5. Types
+
+```typescript
+type ChartPeriod = '1d' | '1w' | '1m' | '3m' | '1y';
+
+// lightweight-charts expects `time` as 'yyyy-mm-dd' (daily) or a UNIX
+// timestamp (intraday); the adapter normalizes the backend value.
+interface Candle {
+  time: string | number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface StockHistoryResult {
+  symbol: string;
+  period: ChartPeriod;
+  candles: Candle[];
+}
+```
+
+Live in `src/types/charts.ts`. The adapter that maps the backend payload to
+lightweight-charts series data lives in `lib/api/adapters.ts` alongside the
+existing adapters.
+
+## 6. Components
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| `StockDetailModal` | `src/components/common/` | Global modal shell, header, quick actions, a11y |
+| `PriceChart` | `src/components/common/` | lightweight-charts candlestick + volume |
+| `PeriodToggle` | `src/components/common/` | Period pill group |
+
+These are shared (cross-page) components, so they live under
+`components/common/` rather than a page-local `_components/` folder, consistent
+with `PriceDisplay` / `ChangeDisplay` / `StaleBadge`.
+
+## 7. State Management
+
+| Data | Type | Tool | Key / Scope |
+|------|------|------|-------------|
+| Active symbol (open modal) | Client | Zustand | `useStockDetail` store (`activeSymbol`, `open`, `close`) |
+| Candle history | Server | TanStack Query | `['stocks', symbol, 'history', period]` |
+| Header price | Server | TanStack Query | `['stocks', symbol, 'price']` |
+| Selected period | Local | `useState` | `StockDetailModal` |
+
+The Zustand store mirrors the shape in the project's `STATE_MANAGEMENT.md`
+example (a `selectedSymbol`-style modal store): a nullable symbol plus
+`open(symbol)` / `close()` actions.
+
+## 8. Library / Dependencies
+
+| Dependency | Purpose | Notes |
+|------------|---------|-------|
+| `lightweight-charts` | Candlestick + volume rendering | Loaded via `next/dynamic` (`ssr: false`); the only new frontend dependency. |
+
+The Portfolio `AllocationChart` stays as-is — it is a pure-Tailwind allocation
+bar, not a price chart, and does not adopt lightweight-charts.
+
+## 9. Phasing & Extensions
+
+- **Phase 1** — Modal + daily candlestick (1W/1M/3M/1Y) with volume, against
+  the backend history endpoint (or mock until it lands). Red/blue convention,
+  responsive, a11y.
+- **Phase 2** — Intraday 1D minute candles, indicator overlays (MA, Bollinger
+  bands — the same indicators the Strategy engine computes), and live
+  last-candle updates during market hours.
+- **Later** — WebSocket-driven realtime candles (`feat/realtime-chart`),
+  drawing tools, and comparison overlays.

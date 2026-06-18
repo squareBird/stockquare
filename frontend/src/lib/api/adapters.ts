@@ -2,6 +2,7 @@
 // Keeping this separate lets components stay in idiomatic camelCase while the
 // backend contract owns the wire format.
 
+import type { Candle, ChartPeriod, StockHistoryResult } from '@/types/charts';
 import type {
   AccountConnectionStatus,
   AccountMode,
@@ -107,6 +108,21 @@ interface StockSearchResultResponse {
   symbol: string;
   name: string;
   market: string;
+}
+
+interface CandleResponse {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface StockHistoryResponse {
+  symbol: string;
+  period: ChartPeriod;
+  candles: CandleResponse[];
 }
 
 export function toAccountStatus(raw: AccountStatusResponse): AccountStatus {
@@ -218,5 +234,24 @@ export function toStockSearchResult(raw: StockSearchResultResponse): StockSearch
     symbol: raw.symbol,
     name: raw.name,
     market: raw.market,
+  };
+}
+
+export function toCandle(raw: CandleResponse): Candle {
+  return {
+    time: raw.time,
+    open: raw.open,
+    high: raw.high,
+    low: raw.low,
+    close: raw.close,
+    volume: raw.volume,
+  };
+}
+
+export function toStockHistory(raw: StockHistoryResponse): StockHistoryResult {
+  return {
+    symbol: raw.symbol,
+    period: raw.period,
+    candles: raw.candles.map(toCandle),
   };
 }

@@ -216,3 +216,30 @@ class DailyCcldResponse(BaseModel):
     msg_cd: str | None = None
     msg1: str | None = None
     output1: list[DailyCcldOutput] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Quotations — inquire-daily-itemchartprice (daily OHLCV chart series)
+# ---------------------------------------------------------------------------
+
+
+class DailyChartCandle(BaseModel):
+    """Single daily candle from inquire-daily-itemchartprice output2."""
+
+    date: str = Field(alias="stck_bsop_date", default="")
+    open: str = Field(alias="stck_oprc", default="0")
+    high: str = Field(alias="stck_hgpr", default="0")
+    low: str = Field(alias="stck_lwpr", default="0")
+    close: str = Field(alias="stck_clpr", default="0")
+    volume: str = Field(alias="acml_vol", default="0")
+
+    model_config = {"populate_by_name": True}
+
+
+class DailyChartResponse(BaseModel):
+    """Envelope for inquire-daily-itemchartprice."""
+
+    rt_cd: str
+    msg_cd: str | None = None
+    msg1: str | None = None
+    output2: list[DailyChartCandle] = Field(default_factory=list)

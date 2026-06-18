@@ -3,6 +3,7 @@
 import ChangeDisplay from '@/components/common/ChangeDisplay';
 import PriceDisplay from '@/components/common/PriceDisplay';
 import { formatKrw, formatVolume } from '@/lib/format';
+import { useStockDetail } from '@/stores/stock-detail';
 import type { Holding } from '@/types/portfolio';
 
 interface HoldingRowProps {
@@ -10,13 +11,18 @@ interface HoldingRowProps {
 }
 
 export default function HoldingRow({ holding }: HoldingRowProps) {
+  const openDetail = useStockDetail((state) => state.open);
   return (
     <tr className="border-b border-gray-100 transition-colors last:border-b-0 hover:bg-gray-50">
       <td className="px-4 py-3">
-        <div className="flex flex-col">
-          <span className="font-medium text-gray-900">{holding.name}</span>
+        <button
+          type="button"
+          onClick={() => openDetail(holding.symbol, holding.name)}
+          className="flex flex-col text-left"
+        >
+          <span className="font-medium text-gray-900 hover:underline">{holding.name}</span>
           <span className="font-mono text-xs text-gray-400">{holding.symbol}</span>
-        </div>
+        </button>
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-gray-700">
         {formatVolume(holding.quantity)}

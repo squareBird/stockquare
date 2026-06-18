@@ -16,6 +16,7 @@ from app.kis.models import (
     AccountBalanceResponse,
     AccountSummaryResponse,
     DailyCcldResponse,
+    DailyChartResponse,
     IndexResponse,
     OrderCashResponse,
     SearchInfoResponse,
@@ -287,6 +288,41 @@ class KISClient:
             response_model=SearchInfoResponse,
             params=params,
         )
+
+    async def inquire_daily_itemchartprice(
+        self,
+        *,
+        symbol: str,
+        from_date: str,
+        to_date: str,
+        period_code: str = "D",
+    ) -> DailyChartResponse:
+        """Fetch the daily OHLCV chart series for a domestic stock.
+
+        `from_date` / `to_date` are `YYYYMMDD` strings; `period_code` is the
+        KIS `FID_PERIOD_DIV_CODE` ("D" daily, "W" weekly, "M" monthly). KIS
+        returns the candles newest-first in `output2`, so callers reverse them
+        to oldest-first. `FID_ORG_ADJ_PRC="0"` requests the adjusted-price
+        (수정주가) series.
+        """
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_INPUT_DATE_1": from_date,
+            "FID_INPUT_DATE_2": to_date,
+            "FID_PERIOD_DIV_CODE": period_code,
+            "FID_ORG_ADJ_PRC": "0",
+        }
+        result = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            tr_id="FHKST03010100",
+            response_model=DailyChartResponse,
+            params=params,
+        )
+        if result.rt_cd != "0":
+            raise InvalidSymbolError(symbol)
+        return result
 
     # ------------------------------------------------------------------
     # Trading — order placement / cancel / modify / history

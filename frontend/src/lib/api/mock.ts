@@ -1,6 +1,7 @@
 // Static mock data used in development when the backend is unavailable.
 // Activated only when `NEXT_PUBLIC_USE_MOCK === 'true'`. Never used in production.
 
+import type { Candle, ChartPeriod, StockHistoryResult } from '@/types/charts';
 import type {
   AccountStatus,
   AccountSummary,
@@ -10,12 +11,7 @@ import type {
   WatchlistItem,
   WatchlistResult,
 } from '@/types/dashboard';
-import type {
-  Order,
-  OrderModifyRequest,
-  OrderRequest,
-  OrdersResult,
-} from '@/types/orders';
+import type { Order, OrderModifyRequest, OrderRequest, OrdersResult } from '@/types/orders';
 import type { Holding, HoldingsResult } from '@/types/portfolio';
 
 export const isMockEnabled = (): boolean =>
@@ -128,6 +124,41 @@ let nextWatchlistId = mockWatchlist.length + 1;
 let mockOrders: Order[] = [];
 let nextOrderId = 1;
 
+const CANDLE_COUNT_BY_PERIOD: Record<ChartPeriod, number> = {
+  '1w': 5,
+  '1m': 22,
+  '3m': 66,
+  '1y': 250,
+};
+
+// Deterministic-ish synthetic daily candles so the chart renders in mock mode.
+// A sine drift plus a seeded pseudo-random wobble keeps the series stable
+// enough to read while still looking like price action.
+function generateMockCandles(period: ChartPeriod): Candle[] {
+  const count = CANDLE_COUNT_BY_PERIOD[period];
+  const candles: Candle[] = [];
+  const today = new Date();
+  let price = 70_000;
+  let seed = 1;
+  const wobble = (): number => {
+    seed = (seed * 1103515245 + 12345) % 2_147_483_648;
+    return seed / 2_147_483_648 - 0.5;
+  };
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - i);
+    const open = price;
+    const drift = (Math.sin(i / 4) + wobble()) * 900;
+    const close = Math.max(1_000, Math.round(open + drift));
+    const high = Math.max(open, close) + Math.round(Math.abs(wobble()) * 600);
+    const low = Math.min(open, close) - Math.round(Math.abs(wobble()) * 600);
+    const volume = 5_000_000 + Math.round(Math.abs(wobble()) * 10_000_000);
+    candles.push({ time: date.toISOString().slice(0, 10), open, high, low, close, volume });
+    price = close;
+  }
+  return candles;
+}
+
 export const mockApi = {
   getAccountStatus: (): AccountStatus => MOCK_ACCOUNT_STATUS,
   getAccountSummary: (): AccountSummary => MOCK_ACCOUNT_SUMMARY,
@@ -172,8 +203,7 @@ export const mockApi = {
     if (normalized.length === 0) return [];
     return MOCK_SEARCH_UNIVERSE.filter(
       (s) =>
-        s.symbol.toLowerCase().includes(normalized) ||
-        s.name.toLowerCase().includes(normalized),
+        s.symbol.toLowerCase().includes(normalized) || s.name.toLowerCase().includes(normalized),
     );
   },
   getHoldings: (): HoldingsResult => ({
@@ -228,11 +258,12 @@ export const mockApi = {
       price: patch.price ?? existing.price,
       updatedAt: new Date().toISOString(),
     };
-    mockOrders = [
-      ...mockOrders.slice(0, index),
-      updated,
-      ...mockOrders.slice(index + 1),
-    ];
+    mockOrders = [...mockOrders.slice(0, index), updated, ...mockOrders.slice(index + 1)];
     return updated;
   },
+  getStockHistory: (symbol: string, period: ChartPeriod): StockHistoryResult => ({
+    symbol,
+    period,
+    candles: generateMockCandles(period),
+  }),
 };

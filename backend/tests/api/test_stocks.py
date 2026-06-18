@@ -8,6 +8,8 @@ from httpx import AsyncClient
 from app.core.exceptions import InvalidSymbolError
 from app.kis.master import StockMasterRow
 from app.kis.models import (
+    DailyChartCandle,
+    DailyChartResponse,
     SearchInfoOutput,
     SearchInfoResponse,
     StockPriceOutput,
@@ -152,3 +154,73 @@ async def test_stock_search_symbol_not_found(app_client: AsyncClient, fake_kis_c
     resp = await app_client.get("/api/v1/stocks/search", params={"q": "999999"})
     assert resp.status_code == 200
     assert resp.json()["count"] == 0
+
+
+def _chart_response() -> DailyChartResponse:
+    """Two daily candles (KIS newest-first) plus a blank padding row."""
+    return DailyChartResponse(
+        rt_cd="0",
+        output2=[
+            DailyChartCandle(
+                stck_bsop_date="20260502",
+                stck_oprc="71000",
+                stck_hgpr="72500",
+                stck_lwpr="70800",
+                stck_clpr="72000",
+                acml_vol="12345678",
+            ),
+            DailyChartCandle(
+                stck_bsop_date="20260501",
+                stck_oprc="70000",
+                stck_hgpr="71000",
+                stck_lwpr="69500",
+                stck_clpr="70800",
+                acml_vol="9876543",
+            ),
+            DailyChartCandle(stck_bsop_date=""),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_stock_history_success(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
+    fake_kis_client.inquire_daily_itemchartprice.return_value = _chart_response()
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"period": "1m"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["symbol"] == "005930"
+    assert body["period"] == "1m"
+    # KIS rows are newest-first; the service reverses them to oldest-first and
+    # drops the blank padding row.
+    assert [c["time"] for c in body["candles"]] == ["2026-05-01", "2026-05-02"]
+    assert body["candles"][0]["open"] == 70000
+    assert body["candles"][1]["close"] == 72000
+    assert body["candles"][1]["volume"] == 12345678
+
+
+@pytest.mark.asyncio
+async def test_stock_history_defaults_to_one_month(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
+    fake_kis_client.inquire_daily_itemchartprice.return_value = _chart_response()
+    resp = await app_client.get("/api/v1/stocks/005930/history")
+    assert resp.status_code == 200
+    assert resp.json()["period"] == "1m"
+
+
+@pytest.mark.asyncio
+async def test_stock_history_symbol_not_found(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
+    fake_kis_client.inquire_daily_itemchartprice.side_effect = InvalidSymbolError("999999")
+    resp = await app_client.get("/api/v1/stocks/999999/history")
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "INVALID_SYMBOL"
+
+
+@pytest.mark.asyncio
+async def test_stock_history_invalid_period(app_client: AsyncClient) -> None:
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"period": "5y"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_stock_history_bad_symbol_format(app_client: AsyncClient) -> None:
+    resp = await app_client.get("/api/v1/stocks/ABC/history")
+    assert resp.status_code == 422
