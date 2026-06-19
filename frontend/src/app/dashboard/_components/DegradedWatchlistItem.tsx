@@ -1,5 +1,6 @@
 'use client';
 
+import { useStockDetail } from '@/stores/stock-detail';
 import type { WatchlistItemError } from '@/types/dashboard';
 
 interface DegradedWatchlistItemProps {
@@ -10,15 +11,27 @@ interface DegradedWatchlistItemProps {
 // `role="status"` + polite live region so screen readers don't get spammed
 // on every poll tick when the error persists across refetches.
 export default function DegradedWatchlistItem({ error, onRemove }: DegradedWatchlistItemProps) {
+  const openDetail = useStockDetail((state) => state.open);
   return (
     <li
       className="group flex items-center justify-between gap-4 border-b border-gray-100 bg-amber-50/60 px-5 py-3 transition-colors last:border-b-0 hover:bg-amber-50"
       role="status"
       aria-live="polite"
     >
-      <div className="min-w-0 flex-1">
+      {/*
+        Even with a failed price lookup the chart is still reachable: clicking
+        the symbol opens the detail modal (no name is available, so the symbol
+        doubles as the label).
+      */}
+      <button
+        type="button"
+        onClick={() => openDetail(error.symbol, error.symbol)}
+        className="min-w-0 flex-1 text-left"
+      >
         <div className="flex items-baseline gap-2">
-          <span className="truncate font-medium text-gray-900">{error.symbol}</span>
+          <span className="truncate font-medium text-gray-900 group-hover:underline">
+            {error.symbol}
+          </span>
           <span
             className="truncate font-mono text-xs text-amber-500"
             title={error.message}
@@ -29,7 +42,7 @@ export default function DegradedWatchlistItem({ error, onRemove }: DegradedWatch
         <div className="mt-0.5 truncate text-xs text-amber-700" title={error.message}>
           {error.message}
         </div>
-      </div>
+      </button>
 
       <div className="flex flex-col items-end gap-0.5 text-right">
         <span className="text-sm font-medium tabular-nums text-gray-400">—</span>

@@ -10,6 +10,9 @@ import type { StockSearchResult } from '@/types/dashboard';
 interface SymbolPickerProps {
   selected: StockSearchResult | null;
   onSelect: (stock: StockSearchResult) => void;
+  // Seeds the search box (e.g. when arriving from the chart modal's 주문하기
+  // action with `?symbol=` in the URL).
+  initialQuery?: string;
 }
 
 function useDebouncedValue<T>(value: T, delay: number): T {
@@ -21,8 +24,8 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export default function SymbolPicker({ selected, onSelect }: SymbolPickerProps) {
-  const [query, setQuery] = useState('');
+export default function SymbolPicker({ selected, onSelect, initialQuery }: SymbolPickerProps) {
+  const [query, setQuery] = useState(initialQuery ?? '');
   const debouncedQuery = useDebouncedValue(query, 300);
   const enabled = useMemo(() => debouncedQuery.trim().length > 0, [debouncedQuery]);
 
@@ -78,23 +81,25 @@ export default function SymbolPicker({ selected, onSelect }: SymbolPickerProps) 
               const isSelected = selected?.symbol === stock.symbol;
               return (
                 <li key={stock.symbol}>
+                  {/* Selecting a result drives the inline chart + order entry
+                      (no modal on the Trading page). */}
                   <button
                     type="button"
                     onClick={() => onSelect(stock)}
-                    className={`flex w-full items-center justify-between px-4 py-3 text-left transition-colors ${
+                    className={`flex w-full items-center justify-between gap-2 px-4 py-3 text-left transition-colors ${
                       isSelected ? 'bg-brand-50' : 'hover:bg-gray-50'
                     }`}
                   >
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">{stock.name}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-gray-900">{stock.name}</div>
                       <div className="font-mono text-xs text-gray-400">
                         {stock.symbol} · {stock.market}
                       </div>
                     </div>
                     {isSelected ? (
-                      <span className="text-xs font-semibold text-brand-700">✓ Selected</span>
+                      <span className="shrink-0 text-xs font-semibold text-brand-700">✓ Selected</span>
                     ) : (
-                      <span className="text-xs font-medium text-gray-500">Select</span>
+                      <span className="shrink-0 text-xs font-medium text-gray-500">Select</span>
                     )}
                   </button>
                 </li>

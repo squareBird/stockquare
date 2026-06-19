@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import SymbolChart from '@/components/common/SymbolChart';
 import { fetchAccountStatus } from '@/lib/api/auth';
 import { placeOrder } from '@/lib/api/orders';
 import type { StockSearchResult } from '@/types/dashboard';
@@ -12,8 +13,8 @@ import type { OrderRequest } from '@/types/orders';
 import OrderConfirmDialog from './OrderConfirmDialog';
 import OrderEntry from './OrderEntry';
 import OrderHistory from './OrderHistory';
-import QuotePanel from './QuotePanel';
 import SymbolPicker from './SymbolPicker';
+import TradingWatchlist from './TradingWatchlist';
 
 interface Toast {
   kind: 'success' | 'error';
@@ -32,6 +33,14 @@ const TOAST_ERROR_MS = 10_000;
 export default function TradingWorkspace() {
   const queryClient = useQueryClient();
   const [selectedSymbol, setSelectedSymbol] = useState<StockSearchResult | null>(null);
+  // Pre-fill the symbol search when arriving from the chart modal's 주문하기
+  // action (`/trading?symbol=...`). Read once on mount to avoid pulling in a
+  // useSearchParams Suspense boundary for a transient nav param.
+  const [initialSymbol] = useState(() =>
+    typeof window === 'undefined'
+      ? ''
+      : (new URLSearchParams(window.location.search).get('symbol') ?? ''),
+  );
   const [pendingRequest, setPendingRequest] = useState<OrderRequest | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
 
@@ -100,33 +109,56 @@ export default function TradingWorkspace() {
         </div>
       ) : null}
 
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
-          <header className="mb-4">
-            <h2 className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
-              Symbol
-            </h2>
-          </header>
-          <div className="flex flex-col gap-4">
-            <SymbolPicker selected={selectedSymbol} onSelect={setSelectedSymbol} />
-            <QuotePanel symbol={selectedSymbol} />
-          </div>
-        </article>
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+        {/* Left rail: symbol search + watchlist — both select the symbol that
+            drives the inline chart and order entry. No modal on this page. */}
+        <div className="flex flex-col gap-6">
+          <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
+            <header className="mb-4">
+              <h2 className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
+                Symbol
+              </h2>
+            </header>
+            <SymbolPicker
+              selected={selectedSymbol}
+              onSelect={setSelectedSymbol}
+              initialQuery={initialSymbol}
+            />
+          </article>
 
-        <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
-          <header className="mb-4">
-            <h2 className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
-              Order Entry
-            </h2>
-          </header>
-          <OrderEntry
-            symbol={selectedSymbol}
-            onSubmit={(request) => {
-              setToast(null);
-              setPendingRequest(request);
-            }}
+          <TradingWatchlist
+            selectedSymbol={selectedSymbol?.symbol ?? null}
+            onSelect={setSelectedSymbol}
           />
-        </article>
+        </div>
+
+        {/* Main column: inline chart for the selected symbol + order entry. */}
+        <div className="flex flex-col gap-6">
+          <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
+            {selectedSymbol ? (
+              <SymbolChart symbol={selectedSymbol.symbol} name={selectedSymbol.name} />
+            ) : (
+              <div className="flex h-96 items-center justify-center text-sm text-gray-400">
+                종목을 검색하거나 관심종목에서 선택하면 차트가 표시됩니다.
+              </div>
+            )}
+          </article>
+
+          <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
+            <header className="mb-4">
+              <h2 className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
+                Order Entry
+              </h2>
+            </header>
+            <OrderEntry
+              symbol={selectedSymbol}
+              onSubmit={(request) => {
+                setToast(null);
+                setPendingRequest(request);
+              }}
+            />
+          </article>
+        </div>
       </section>
 
       <section>

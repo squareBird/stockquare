@@ -1,10 +1,18 @@
 # Charts Spec
 
-Price charts shown inside a **stock detail modal** that opens whenever the user
-clicks a symbol anywhere in the app. The chart is a candlestick + volume view
-rendered with TradingView's **lightweight-charts**. The modal — not a dedicated
-route — is the entry point, so charting layers on top of the existing
-Dashboard / Portfolio pages without adding a nav tab.
+Price charts shown two ways, both built on the same `SymbolChart` core
+(candlestick + volume rendered with TradingView's **lightweight-charts**):
+
+1. **Stock detail modal** — opens when the user clicks a symbol on the
+   **Dashboard** or **Portfolio**. The modal — not a dedicated route — layers
+   charting on top of those pages without adding a nav tab.
+2. **Inline panel on the Trading page** — the Trading page does **not** use the
+   modal. Selecting a symbol (from the left-rail watchlist or the search
+   results) renders the chart inline in the main column, alongside the order
+   entry, so the user can chart and trade without a popup.
+
+Both surfaces share the `SymbolChart` component (header price line + period
+toggle + chart, with the KR-only / overseas-degradation rules in §2).
 
 > **Data prerequisite**: this depends on `GET /api/v1/stocks/{symbol}/history`,
 > currently a Phase 2 placeholder in backend `STOCKS.md`. That endpoint (the
@@ -14,15 +22,22 @@ Dashboard / Portfolio pages without adding a nav tab.
 
 ## Entry points
 
-A single global modal, driven by a Zustand store holding the `activeSymbol`.
-Any of these click targets call `openStockDetail(symbol)`:
+**Modal (Dashboard / Portfolio)** — a single global modal, driven by a Zustand
+store holding the `activeSymbol`. These click targets call
+`openStockDetail(symbol, name)`:
 
 - Dashboard `WatchlistItem` (and `DegradedWatchlistItem`)
-- `AddStockModal` / `SymbolPicker` search result row
+- `AddStockModal` search result row (name region; the trailing button still adds)
 - Portfolio `HoldingRow`
 
-The modal is mounted once near the root (in `providers.tsx` or the root
-layout's client shell) so it is reachable from every page.
+The modal is mounted once near the root (`providers.tsx`) so it is reachable
+from those pages.
+
+**Inline (Trading)** — the Trading page selects a symbol into local state
+instead of opening the modal. Both the left-rail `TradingWatchlist` rows and the
+`SymbolPicker` search results call the page's `onSelect`, which sets the symbol
+that drives the inline `SymbolChart` **and** arms the order entry. `SymbolPicker`
+therefore does not open the modal.
 
 ## Layout (modal)
 
@@ -82,6 +97,12 @@ Wraps a `lightweight-charts` chart instance.
   skeleton while fetching, a stale badge if cached data is shown during a
   refetch, and a Korean "차트 데이터를 불러올 수 없습니다" message on full
   failure.
+- **KR-only (Phase 1).** Charting, watchlist, and trading use domestic KIS
+  endpoints (KRW), so they accept 6-digit KRX codes only. Overseas symbols are
+  searchable for discovery but `SymbolChart` skips the history fetch for a
+  non-`^\d{6}$` symbol and shows "해외 종목 차트는 아직 지원하지 않습니다"; the
+  modal's quick actions are likewise disabled for overseas symbols. Full
+  overseas price/chart support is deferred (see backend `STOCKS.md` Phase 2).
 
 ## 3. Period selector
 
@@ -152,9 +173,11 @@ existing adapters.
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `StockDetailModal` | `src/components/common/` | Global modal shell, header, quick actions, a11y |
+| `SymbolChart` | `src/components/common/` | Shared header price + period toggle + chart; KR-only / overseas degradation. Used by both surfaces |
+| `StockDetailModal` | `src/components/common/` | Global modal shell (Dashboard/Portfolio): wraps `SymbolChart` + quick actions + a11y |
 | `PriceChart` | `src/components/common/` | lightweight-charts candlestick + volume |
 | `PeriodToggle` | `src/components/common/` | Period pill group |
+| `TradingWatchlist` | `src/app/trading/_components/` | Trading-page left-rail watchlist; rows select the symbol for the inline chart + order |
 
 These are shared (cross-page) components, so they live under
 `components/common/` rather than a page-local `_components/` folder, consistent

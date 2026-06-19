@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { searchStocks } from '@/lib/api/stocks';
+import { useStockDetail } from '@/stores/stock-detail';
 
 interface AddStockModalProps {
   isOpen: boolean;
@@ -22,6 +23,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 }
 
 export default function AddStockModal({ isOpen, onClose, onAdd }: AddStockModalProps) {
+  const openDetail = useStockDetail((state) => state.open);
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, 300);
 
@@ -107,22 +109,33 @@ export default function AddStockModal({ isOpen, onClose, onAdd }: AddStockModalP
           {data && data.length > 0 ? (
             <ul className="divide-y divide-gray-100">
               {data.map((stock) => (
-                <li key={stock.symbol}>
+                <li
+                  key={stock.symbol}
+                  className="flex items-center justify-between gap-2 px-2 py-3 hover:bg-gray-50"
+                >
+                  {/* Name/symbol opens the chart modal; the trailing button keeps
+                      the primary add-to-watchlist action. */}
+                  <button
+                    type="button"
+                    onClick={() => openDetail(stock.symbol, stock.name)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-sm font-medium text-gray-900 hover:underline">
+                      {stock.name}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {stock.symbol} · {stock.market}
+                    </div>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
                       onAdd(stock.symbol);
                       onClose();
                     }}
-                    className="flex w-full items-center justify-between px-2 py-3 text-left hover:bg-gray-50"
+                    className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100"
                   >
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">{stock.name}</div>
-                      <div className="text-xs text-gray-400">
-                        {stock.symbol} · {stock.market}
-                      </div>
-                    </div>
-                    <span className="text-xs font-semibold text-gray-700">Add</span>
+                    Add
                   </button>
                 </li>
               ))}
