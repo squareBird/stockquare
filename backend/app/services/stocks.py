@@ -107,23 +107,31 @@ class StocksService:
 
     async def _search_kr_symbol(self, query: str, limit: int) -> list[StockSearchItem]:
         try:
-            price_resp = await self._kis.inquire_stock_price(query)
+            await self._kis.inquire_stock_price(query)
         except InvalidSymbolError:
             return []
-        # Use search_info for a reliable market classification.
+        # inquire-price validates the code but carries no stock name, so the
+        # name and market both come from search-info (prdt_name / mket_id_cd).
+        # Fall back to the master index, then the code, when search-info fails.
+        name = ""
         market = "KOSPI"
         try:
             info_resp = await self._kis.search_info(query)
             if info_resp.rt_cd == "0":
+                name = info_resp.output.name
                 market = _classify_market(info_resp.output.market_code)
         except KISAPIError as exc:
             logger.warning(
                 "stock search-info lookup failed",
                 extra={"symbol": query, "exc_type": type(exc).__name__},
             )
+        if not name:
+            row = self._index.by_symbol(query)
+            if row is not None:
+                name = row.name_ko or row.name_en
         item = StockSearchItem(
             symbol=query,
-            name=price_resp.output.name or query,
+            name=name or query,
             market=market,
         )
         return [item][:limit]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db_session, get_kis_client
+from app.api.deps import get_db_session, get_kis_client, get_stock_index
 from app.kis.client import KISClient
 from app.models.watchlist import (
     WatchlistAddRequest,
@@ -14,6 +14,7 @@ from app.models.watchlist import (
     WatchlistReorderResponse,
     WatchlistResponse,
 )
+from app.services.stock_index import StockMasterIndex
 from app.services.watchlist import WatchlistService
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
@@ -22,8 +23,9 @@ router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 def _get_service(
     session: AsyncSession = Depends(get_db_session),
     kis: KISClient = Depends(get_kis_client),
+    index: StockMasterIndex = Depends(get_stock_index),
 ) -> WatchlistService:
-    return WatchlistService(session=session, kis=kis)
+    return WatchlistService(session=session, kis=kis, index=index)
 
 
 @router.get("", response_model=WatchlistResponse)

@@ -26,6 +26,7 @@ from app.models.watchlist import (
     WatchlistOrderItem,
 )
 from app.services._helpers import to_float, to_int
+from app.services.stock_index import StockMasterIndex
 
 logger = logging.getLogger(__name__)
 
@@ -43,18 +44,37 @@ class WatchlistEnrichmentResult:
 class WatchlistService:
     """Business logic for watchlist CRUD and enrichment."""
 
-    def __init__(self, session: AsyncSession, kis: KISClient) -> None:
+    def __init__(self, session: AsyncSession, kis: KISClient, index: StockMasterIndex) -> None:
         self._session = session
         self._kis = kis
+        self._index = index
+
+    def _resolve_name(self, symbol: str, fallback: str = "") -> str:
+        """Resolve a display name for a symbol.
+
+        KIS `inquire-price` (FHKST01010100) does NOT return the stock's
+        Korean name — its `output` carries the market name
+        (`rprs_mrkt_kor_name`) and sector name (`bstp_kor_isnm`) but no
+        `hts_kor_isnm`. The authoritative Korean/English name comes from the
+        in-memory master index instead. Falls back to the stored name, then
+        the symbol, when the index has no row (e.g. a freshly listed code
+        not yet in the snapshot).
+        """
+        row = self._index.by_symbol(symbol)
+        if row is not None:
+            name = row.name_ko or row.name_en
+            if name:
+                return name
+        return fallback or symbol
 
     async def list_watchlist(self) -> WatchlistEnrichmentResult:
         """Return watchlist items enriched with live KIS price data.
 
-        Successful KIS enrichments end up in `items` with the live Korean
-        name (`hts_kor_isnm`). Failed enrichments end up in `errors` — the
-        frontend still knows which rows exist and can render a degraded
-        skeleton for each. An empty watchlist returns empty lists on both
-        sides without any KIS traffic.
+        Successful KIS enrichments end up in `items` with the master-index
+        Korean name. Failed enrichments end up in `errors` — the frontend
+        still knows which rows exist and can render a degraded skeleton for
+        each. An empty watchlist returns empty lists on both sides without
+        any KIS traffic.
         """
         result = await self._session.execute(select(Watchlist).order_by(Watchlist.sort_order.asc(), Watchlist.id.asc()))
         entries = list(result.scalars().all())
@@ -72,9 +92,9 @@ class WatchlistService:
         errors: list[WatchlistItemError] = []
         for entry, price_result in zip(entries, price_results, strict=True):
             if isinstance(price_result, StockPriceResponse):
-                # Prefer the live KIS Korean name so delisted/renamed
-                # symbols surface immediately without a DB migration.
-                live_name = price_result.output.name or entry.name or entry.symbol
+                # inquire-price has no stock name field; resolve it from the
+                # master index, falling back to the stored name / symbol.
+                live_name = self._resolve_name(entry.symbol, entry.name)
                 items.append(
                     WatchlistItemResponse(
                         id=entry.id,
@@ -120,12 +140,12 @@ class WatchlistService:
         if duplicate is not None:
             raise DuplicateSymbolError(symbol)
 
-        # Validate the symbol by asking KIS for current price. Grab the
-        # Korean name while we're here, but treat it as best-effort —
-        # list_watchlist always re-fetches the live name at read time, so
-        # a stale DB value never surfaces to clients.
-        price_resp = await self._kis.inquire_stock_price(symbol)
-        name = price_resp.output.name or symbol
+        # Validate the symbol by asking KIS for current price (raises
+        # InvalidSymbolError on an unknown code). The name comes from the
+        # master index, not inquire-price, which carries no stock name —
+        # best-effort, since list_watchlist re-resolves it at read time.
+        await self._kis.inquire_stock_price(symbol)
+        name = self._resolve_name(symbol)
 
         entry = Watchlist(symbol=symbol, name=name, sort_order=count)
         self._session.add(entry)

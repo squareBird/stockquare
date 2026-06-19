@@ -6,7 +6,10 @@ import pytest
 from httpx import AsyncClient
 
 from app.core.exceptions import InvalidSymbolError, KISAPIError
+from app.kis.master import StockMasterRow
 from app.kis.models import StockPriceOutput, StockPriceResponse
+from app.models.stocks import StockMarket
+from app.services.stock_index import StockMasterIndex
 from tests.conftest import FakeKISClient
 
 
@@ -28,8 +31,22 @@ def _price_response(
     )
 
 
+def _seed_index(index: StockMasterIndex, *rows: tuple[str, str]) -> None:
+    """Seed the master index with (symbol, korean name) pairs so name
+    resolution has a source — inquire-price carries no stock name."""
+    index.replace(
+        [
+            StockMasterRow(symbol=symbol, name_ko=name, name_en="", market=StockMarket.KOSPI)
+            for symbol, name in rows
+        ]
+    )
+
+
 @pytest.mark.asyncio
-async def test_watchlist_add_list_delete_flow(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
+async def test_watchlist_add_list_delete_flow(
+    app_client: AsyncClient, fake_kis_client: FakeKISClient, stock_index: StockMasterIndex
+) -> None:
+    _seed_index(stock_index, ("005930", "삼성전자"))
     fake_kis_client.inquire_stock_price.return_value = _price_response()
 
     # Add
@@ -59,18 +76,37 @@ async def test_watchlist_add_list_delete_flow(app_client: AsyncClient, fake_kis_
 
 
 @pytest.mark.asyncio
-async def test_watchlist_list_uses_live_korean_name(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
-    """Regression for Phase 1.5: GET /watchlist must surface the live KIS
-    Korean name (`hts_kor_isnm`) instead of echoing the stored symbol."""
-    fake_kis_client.inquire_stock_price.return_value = _price_response(name="삼성전자")
+async def test_watchlist_list_uses_korean_name_from_index(
+    app_client: AsyncClient, fake_kis_client: FakeKISClient, stock_index: StockMasterIndex
+) -> None:
+    """GET /watchlist must surface the master-index Korean name instead of
+    echoing the stored symbol. inquire-price (FHKST01010100) carries no stock
+    name, so the name is resolved from the in-memory master index at read time —
+    an index refresh (renamed/relisted symbol) surfaces without a DB migration."""
+    _seed_index(stock_index, ("005930", "삼성전자"))
+    fake_kis_client.inquire_stock_price.return_value = _price_response()
     await app_client.post("/api/v1/watchlist", json={"symbol": "005930"})
 
-    # Simulate a renamed listing: the next KIS response uses a different name.
-    fake_kis_client.inquire_stock_price.return_value = _price_response(name="삼성전자우")
+    # A later index refresh renames the listing; the new name surfaces on read.
+    _seed_index(stock_index, ("005930", "삼성전자우"))
     listing = await app_client.get("/api/v1/watchlist")
     assert listing.status_code == 200
     body = listing.json()
     assert body["items"][0]["name"] == "삼성전자우"
+
+
+@pytest.mark.asyncio
+async def test_watchlist_name_falls_back_to_symbol_when_index_empty(
+    app_client: AsyncClient, fake_kis_client: FakeKISClient
+) -> None:
+    """When the master index has no row for a symbol (e.g. a freshly listed
+    code not yet in the snapshot), the name falls back to the symbol rather
+    than failing — the row still renders, just without a friendly name."""
+    fake_kis_client.inquire_stock_price.return_value = _price_response()
+    await app_client.post("/api/v1/watchlist", json={"symbol": "005930"})
+    listing = await app_client.get("/api/v1/watchlist")
+    body = listing.json()
+    assert body["items"][0]["name"] == "005930"
 
 
 @pytest.mark.asyncio
@@ -138,11 +174,12 @@ async def test_empty_watchlist_returns_200_without_kis_calls(
 
 @pytest.mark.asyncio
 async def test_watchlist_partial_failure_moves_failed_to_errors(
-    app_client: AsyncClient, fake_kis_client: FakeKISClient
+    app_client: AsyncClient, fake_kis_client: FakeKISClient, stock_index: StockMasterIndex
 ) -> None:
     """Regression for Phase 1.5: one symbol fails → it moves to `errors[]`,
     the healthy siblings stay in `items[]`, and HTTP status stays 200.
     The legacy `price:0` silent-degrade behavior is gone."""
+    _seed_index(stock_index, ("005930", "삼성전자"), ("000660", "SK하이닉스"))
     # Seed two items while KIS is healthy.
     fake_kis_client.inquire_stock_price.return_value = _price_response(name="삼성전자")
     await app_client.post("/api/v1/watchlist", json={"symbol": "005930"})

@@ -58,7 +58,7 @@ class StockSearchResponse(BaseModel):
 
 ### Behavior
 
-- When `q` is a valid 6-digit code, the backend attempts a direct `inquire-price` lookup first, then uses `search-info` to classify the market. This path stays on the live KIS quote API so the returned name is always the authoritative HTS name.
+- When `q` is a valid 6-digit code, the backend validates it with a direct `inquire-price` lookup, then uses `search-info` for both the name (`prdt_name`) and market classification. **`inquire-price` (`FHKST01010100`) carries no stock name** — its `output` exposes the market name (`rprs_mrkt_kor_name`) and sector name (`bstp_kor_isnm`) but not `hts_kor_isnm` — so the name comes from `search-info`, falling back to the in-memory master index (`name_ko` / `name_en`), then the code itself.
 - When `q` is text, the backend serves results from the in-memory Local Master Index (see below). Ranking is tier-based: exact symbol match, then exact name, then prefix, then substring; ties break on market order (KOSPI → KOSDAQ → NASDAQ → NYSE → AMEX). Search is case-insensitive and NFC-normalized. Up to `limit` rows are returned.
 - Unknown symbols, KIS failures, and empty-index states all return `{"items": [], "count": 0}` rather than an error — the search box must never show a red failure state for a legitimate empty result.
 
@@ -88,7 +88,8 @@ On startup the backend downloads five flat-file stock listings from the KIS publ
 
 | Field | KIS Endpoint | tr_id | KIS Field |
 |-------|-------------|-------|-----------|
-| name (by code) | `/uapi/domestic-stock/v1/quotations/inquire-price` | `FHKST01010100` | `hts_kor_isnm` |
+| validate (by code) | `/uapi/domestic-stock/v1/quotations/inquire-price` | `FHKST01010100` | `rt_cd` (existence check only — no name) |
+| name (by code) | `/uapi/domestic-stock/v1/quotations/search-info` | `CTPF1002R` | `prdt_name` (falls back to master index) |
 | symbol (by name) | `/uapi/domestic-stock/v1/quotations/search-info` | `CTPF1002R` | `shtn_pdno` |
 | name (by name) | Same | Same | `prdt_name` |
 | market | Same | Same | `mket_id_cd` (mapped to KOSPI/KOSDAQ) |

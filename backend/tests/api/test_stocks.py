@@ -50,7 +50,9 @@ async def test_stock_search_by_symbol(app_client: AsyncClient, fake_kis_client: 
     body = resp.json()
     assert body["count"] == 1
     assert body["items"][0]["symbol"] == "005930"
-    assert body["items"][0]["name"] == "Samsung"
+    # inquire-price carries no stock name; the name comes from search-info's
+    # prdt_name (the authoritative product name).
+    assert body["items"][0]["name"] == "Samsung Electronics"
 
 
 @pytest.mark.asyncio

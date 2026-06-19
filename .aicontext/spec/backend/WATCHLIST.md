@@ -58,7 +58,7 @@ retry affordance.
 class WatchlistItemResponse(BaseModel):
     id: int
     symbol: str
-    name: str                   # Live Korean name from KIS `hts_kor_isnm`
+    name: str                   # Korean name from the in-memory master index
     price: int                  # Current price (KRW)
     change: int                 # Change from previous close (KRW)
     change_rate: float          # Change rate (%)
@@ -80,11 +80,16 @@ class WatchlistResponse(BaseModel):
 ```
 
 **Name enrichment**:
-- Watchlist item names are **always derived from the live KIS price response**
-  (`hts_kor_isnm` field) at read time. The DB does not persist the canonical
-  Korean name; the symbol column alone is durable state. This makes
-  listed/renamed stocks reflect automatically without any migration.
-- Failed enrichments surface in `errors[]` keyed by `symbol` (no `name`
+- Watchlist item names are **resolved from the in-memory master index**
+  (`name_ko`, falling back to `name_en`) at read time, keyed by symbol.
+  KIS `inquire-price` is used only for the live price/change/volume — it
+  carries no stock name (`hts_kor_isnm` is not in its output), so it cannot
+  be the name source. The DB persists a best-effort name at add time but the
+  read path always re-resolves from the index, so an index refresh (renamed /
+  relisted symbol) reflects without any migration. When the index has no row
+  for a symbol (e.g. a freshly listed code not yet in the snapshot), the name
+  falls back to the stored value, then the symbol.
+- Failed price enrichments surface in `errors[]` keyed by `symbol` (no `name`
   field — the frontend already knows the symbol is the sort-stable key).
 
 **Degradation**:
@@ -122,8 +127,8 @@ class WatchlistAddRequest(BaseModel):
 }
 ```
 
-`name` is sourced from KIS `hts_kor_isnm` at add time (best effort) and
-re-fetched live on every `GET /watchlist` read — see §2 Name Enrichment.
+`name` is resolved from the master index at add time (best effort) and
+re-resolved on every `GET /watchlist` read — see §2 Name Enrichment.
 
 **Validation**:
 - Reject duplicate symbols (409 Conflict, `DUPLICATE_SYMBOL`).
@@ -176,8 +181,10 @@ class WatchlistReorderRequest(BaseModel):
 ## 2. KIS Price Enrichment
 
 When returning watchlist items, enrich each symbol with real-time price data
-from KIS in parallel. The Korean name is sourced from the same response so
-that `GET /watchlist` always reflects the current canonical name.
+from KIS in parallel. The Korean name is **not** part of the price response —
+it is resolved separately from the in-memory master index (see §2 Name
+Enrichment), so `GET /watchlist` reflects the current canonical name without
+an extra KIS call.
 
 | Field | KIS Endpoint | tr_id | KIS Field |
 |-------|-------------|-------|-----------|
@@ -185,7 +192,7 @@ that `GET /watchlist` always reflects the current canonical name.
 | change | Same | Same | `prdy_vrss` |
 | change_rate | Same | Same | `prdy_ctrt` |
 | volume | Same | Same | `acml_vol` |
-| name (Korean) | Same | Same | `hts_kor_isnm` |
+| name (Korean) | _master index_ (`StockMasterIndex.by_symbol`) | — | `name_ko` / `name_en` |
 
 Price lookups are issued via `asyncio.gather(..., return_exceptions=True)`
 so a single failure only routes that one symbol into `errors[]`. KIS is
