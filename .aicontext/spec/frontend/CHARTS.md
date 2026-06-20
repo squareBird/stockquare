@@ -90,9 +90,14 @@ Wraps a `lightweight-charts` chart instance.
   same up/down color at reduced opacity.
 - `'use client'`, and the chart module is loaded via `next/dynamic` with
   `ssr: false` (lightweight-charts touches `window`/`document` on import).
-- A `ResizeObserver` keeps the chart width in sync with the modal; the chart
-  instance is created in a `useEffect` and `remove()`d on cleanup to avoid
-  leaks across symbol switches.
+- A `ResizeObserver` keeps the chart width in sync with the container, and
+  **re-fits the visible range on every resize** (`timeScale().fitContent()`)
+  so the full candle series stays in view — narrowing the panel must never
+  push the oldest candles off the left edge. The time scale also fixes both
+  edges to the data bounds (`fixLeftEdge` / `fixRightEdge`) so the user can
+  zoom within the series but cannot scroll past it into empty space and lose
+  the earlier candles. The chart instance is created in a `useEffect` and
+  `remove()`d on cleanup to avoid leaks across symbol switches.
 - Loading / error / empty states mirror the card pattern used elsewhere:
   skeleton while fetching, a stale badge if cached data is shown during a
   refetch, and a Korean "차트 데이터를 불러올 수 없습니다" message on full

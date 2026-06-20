@@ -43,7 +43,9 @@ export default function PriceChart({ candles }: PriceChartProps) {
         horzLines: { color: '#f3f4f6' },
       },
       rightPriceScale: { borderColor: '#e5e7eb' },
-      timeScale: { borderColor: '#e5e7eb' },
+      // Anchor both ends to the data bounds so zooming/panning can't scroll
+      // past the series into empty space and hide the earlier candles.
+      timeScale: { borderColor: '#e5e7eb', fixLeftEdge: true, fixRightEdge: true },
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -83,7 +85,11 @@ export default function PriceChart({ candles }: PriceChartProps) {
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) chart.applyOptions({ width: entry.contentRect.width });
+      if (!entry) return;
+      chart.applyOptions({ width: entry.contentRect.width });
+      // Re-fit after a width change so a narrower panel doesn't leave the
+      // oldest candles scrolled off the left edge at the old bar spacing.
+      chart.timeScale().fitContent();
     });
     resizeObserver.observe(container);
 
