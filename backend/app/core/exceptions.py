@@ -165,3 +165,18 @@ class OrderFailedError(StockquareError):
     def __init__(self, message: str, kis_msg_cd: str | None = None) -> None:
         self.kis_msg_cd = kis_msg_cd
         super().__init__(message)
+
+
+# ---------------------------------------------------------------------------
+# Strategy engine — Phase 1
+# ---------------------------------------------------------------------------
+
+
+class StrategyNotFoundError(StockquareError):
+    """Strategy id not found."""
+
+    code: ClassVar[str] = "STRATEGY_NOT_FOUND"
+    http_status: ClassVar[int] = 404
+
+    def __init__(self, strategy_id: int) -> None:
+        super().__init__(f"Strategy not found: {strategy_id}")

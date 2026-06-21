@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     trading_real_mode_enabled: bool = Field(default=True)
     trading_max_order_amount: int = Field(default=50_000)
 
+    # Strategy auto-execution gates — reserved for Phase 2 (scheduler +
+    # auto-execution). Phase 1 only does manual dry-run evaluation, so these
+    # are defined for forward-compat but not yet consulted. See STRATEGY.md §5.
+    strategy_auto_execute_enabled: bool = Field(default=False)
+    strategy_max_order_amount: int = Field(default=50_000)
+    strategy_max_daily_orders: int = Field(default=5)
+
     # CORS — comma-separated list via `CORS_ORIGINS` env var, e.g.
     # `CORS_ORIGINS=http://localhost:3000,https://stockquare.app`.
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
