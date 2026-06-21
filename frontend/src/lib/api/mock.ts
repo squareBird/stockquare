@@ -13,6 +13,7 @@ import type {
 } from '@/types/dashboard';
 import type { Order, OrderModifyRequest, OrderRequest, OrdersResult } from '@/types/orders';
 import type { Holding, HoldingsResult } from '@/types/portfolio';
+import type { Signal, Strategy, StrategiesResult } from '@/types/strategy';
 
 export const isMockEnabled = (): boolean =>
   process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_USE_MOCK === 'true';
@@ -120,6 +121,88 @@ const MOCK_HOLDINGS: Holding[] = [
 
 let mockWatchlist: WatchlistItem[] = [...MOCK_WATCHLIST];
 let nextWatchlistId = mockWatchlist.length + 1;
+
+// ---------------------------------------------------------------------------
+// Strategy mock data
+// ---------------------------------------------------------------------------
+
+const MOCK_SIGNAL_HOLD: Signal = {
+  action: 'hold',
+  confidence: 0,
+  rationale: '충분한 신호가 없습니다. 지표들 사이에 합의가 이루어지지 않았습니다.',
+  executed: false,
+  orderId: null,
+  createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+};
+
+const MOCK_SIGNAL_BUY: Signal = {
+  action: 'buy',
+  confidence: 0.78,
+  rationale: 'MA(5)가 MA(20)를 상향 돌파했습니다 (골든크로스). RSI 38로 과매도 직전입니다.',
+  executed: false,
+  orderId: null,
+  createdAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+};
+
+const INITIAL_MOCK_STRATEGIES: Strategy[] = [
+  {
+    id: 1,
+    name: '삼성전자 골든크로스',
+    symbol: '005930',
+    nameKr: 'Samsung Electronics',
+    strategyType: 'rule',
+    executionMode: 'signal_only',
+    sidePolicy: 'long_only',
+    rule: {
+      indicators: [
+        { kind: 'ma_cross', fast: 5, slow: 20 },
+        { kind: 'rsi', period: 14, oversold: 30, overbought: 70 },
+      ],
+    },
+    sizing: { mode: 'fixed_amount', amountKrw: 50_000 },
+    active: false,
+    createdAt: new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
+    lastSignal: MOCK_SIGNAL_HOLD,
+  },
+  {
+    id: 2,
+    name: 'SK하이닉스 볼린저밴드',
+    symbol: '000660',
+    nameKr: 'SK Hynix',
+    strategyType: 'rule',
+    executionMode: 'signal_only',
+    sidePolicy: 'long_only',
+    rule: {
+      indicators: [{ kind: 'bollinger', period: 20, mult: 2 }],
+    },
+    sizing: { mode: 'fixed_quantity', quantity: 1 },
+    active: false,
+    createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+    lastSignal: MOCK_SIGNAL_BUY,
+  },
+];
+
+const INITIAL_MOCK_SIGNALS: Map<number, Signal[]> = new Map([
+  [
+    1,
+    [
+      MOCK_SIGNAL_HOLD,
+      {
+        action: 'buy',
+        confidence: 0.65,
+        rationale: 'RSI 28로 과매도 구간입니다.',
+        executed: false,
+        orderId: null,
+        createdAt: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+      },
+    ],
+  ],
+  [2, [MOCK_SIGNAL_BUY]],
+]);
+
+let mockStrategies: Strategy[] = [...INITIAL_MOCK_STRATEGIES];
+let mockSignalsByStrategy: Map<number, Signal[]> = new Map(INITIAL_MOCK_SIGNALS);
+let nextStrategyId = INITIAL_MOCK_STRATEGIES.length + 1;
 
 let mockOrders: Order[] = [];
 let nextOrderId = 1;
@@ -266,4 +349,91 @@ export const mockApi = {
     period,
     candles: generateMockCandles(period),
   }),
+
+  // Strategy mock API
+  getStrategies: (): StrategiesResult => ({
+    strategies: [...mockStrategies],
+    count: mockStrategies.length,
+  }),
+  createStrategy: (data: {
+    name: string;
+    symbol: string;
+    rule: Strategy['rule'];
+    sizing: Strategy['sizing'];
+  }): Strategy => {
+    const stock = MOCK_SEARCH_UNIVERSE.find((s) => s.symbol === data.symbol);
+    const now = new Date().toISOString();
+    const strategy: Strategy = {
+      id: nextStrategyId,
+      name: data.name,
+      symbol: data.symbol,
+      nameKr: stock?.name ?? data.symbol,
+      strategyType: 'rule',
+      executionMode: 'signal_only',
+      sidePolicy: 'long_only',
+      rule: data.rule,
+      sizing: data.sizing,
+      active: false,
+      createdAt: now,
+      lastSignal: null,
+    };
+    nextStrategyId += 1;
+    mockStrategies = [...mockStrategies, strategy];
+    return strategy;
+  },
+  updateStrategy: (id: number, patch: Partial<Strategy>): Strategy => {
+    const index = mockStrategies.findIndex((s) => s.id === id);
+    if (index === -1) throw new Error(`Mock strategy ${id} not found`);
+    const existing = mockStrategies[index];
+    if (!existing) throw new Error(`Mock strategy ${id} not found`);
+    const updated: Strategy = { ...existing, ...patch };
+    mockStrategies = [
+      ...mockStrategies.slice(0, index),
+      updated,
+      ...mockStrategies.slice(index + 1),
+    ];
+    return updated;
+  },
+  deleteStrategy: (id: number): void => {
+    mockStrategies = mockStrategies.filter((s) => s.id !== id);
+    mockSignalsByStrategy.delete(id);
+  },
+  evaluateStrategy: (id: number): Signal => {
+    const strategy = mockStrategies.find((s) => s.id === id);
+    if (!strategy) throw new Error(`Mock strategy ${id} not found`);
+    const actions = ['buy', 'sell', 'hold'] as const;
+    const action = actions[id % 3] ?? 'hold';
+    const confidence = action === 'hold' ? 0 : 0.72;
+    const rationaleMap: Record<string, string> = {
+      buy: 'MA(5)가 MA(20)를 상향 돌파했습니다 (골든크로스). RSI 42로 중립 구간입니다.',
+      sell: 'MA(5)가 MA(20)를 하향 돌파했습니다 (데드크로스). RSI 68로 과매수 구간에 근접합니다.',
+      hold: '충분한 신호가 없습니다. 지표들 사이에 합의가 이루어지지 않았습니다.',
+    };
+    const signal: Signal = {
+      action,
+      confidence,
+      rationale: rationaleMap[action] ?? '',
+      executed: false,
+      orderId: null,
+      createdAt: new Date().toISOString(),
+    };
+    // Persist in history and update lastSignal on the strategy
+    const existing = mockSignalsByStrategy.get(id) ?? [];
+    mockSignalsByStrategy.set(id, [signal, ...existing]);
+    const strategyIndex = mockStrategies.findIndex((s) => s.id === id);
+    if (strategyIndex !== -1) {
+      const s = mockStrategies[strategyIndex];
+      if (s) {
+        mockStrategies = [
+          ...mockStrategies.slice(0, strategyIndex),
+          { ...s, lastSignal: signal },
+          ...mockStrategies.slice(strategyIndex + 1),
+        ];
+      }
+    }
+    return signal;
+  },
+  getSignals: (id: number): Signal[] => {
+    return mockSignalsByStrategy.get(id) ?? [];
+  },
 };

@@ -17,6 +17,16 @@ import type {
 } from '@/types/dashboard';
 import type { Order, OrderSide, OrderStatus, OrderType } from '@/types/orders';
 import type { Holding, HoldingError } from '@/types/portfolio';
+import type {
+  ExecutionMode,
+  Indicator,
+  IndicatorKind,
+  Signal,
+  SignalAction,
+  SizingConfig,
+  Strategy,
+  StrategyType,
+} from '@/types/strategy';
 
 interface AccountStatusResponse {
   status: AccountConnectionStatus;
@@ -253,5 +263,85 @@ export function toStockHistory(raw: StockHistoryResponse): StockHistoryResult {
     symbol: raw.symbol,
     period: raw.period,
     candles: raw.candles.map(toCandle),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Strategy adapters
+// ---------------------------------------------------------------------------
+
+interface SignalResponse {
+  action: SignalAction;
+  confidence: number;
+  rationale: string;
+  executed: boolean;
+  order_id?: string | null;
+  created_at: string;
+}
+
+interface IndicatorResponse {
+  kind: IndicatorKind;
+  [param: string]: number | string;
+}
+
+interface SizingResponse {
+  mode: 'fixed_quantity' | 'fixed_amount';
+  quantity?: number;
+  amount_krw?: number;
+}
+
+interface StrategyResponse {
+  id: number;
+  name: string;
+  symbol: string;
+  name_kr: string;
+  strategy_type: StrategyType;
+  execution_mode: ExecutionMode;
+  side_policy: string;
+  rule: { indicators: IndicatorResponse[] } | null;
+  sizing: SizingResponse;
+  active: boolean;
+  created_at: string;
+  last_signal: SignalResponse | null;
+}
+
+export function toSignal(raw: SignalResponse): Signal {
+  return {
+    action: raw.action,
+    confidence: raw.confidence,
+    rationale: raw.rationale,
+    executed: raw.executed,
+    orderId: raw.order_id,
+    createdAt: raw.created_at,
+  };
+}
+
+function toIndicator(raw: IndicatorResponse): Indicator {
+  return { ...raw } as Indicator;
+}
+
+function toSizing(raw: SizingResponse): SizingConfig {
+  if (raw.mode === 'fixed_quantity') {
+    return { mode: 'fixed_quantity', quantity: raw.quantity ?? 0 };
+  }
+  return { mode: 'fixed_amount', amountKrw: raw.amount_krw ?? 0 };
+}
+
+export function toStrategy(raw: StrategyResponse): Strategy {
+  return {
+    id: raw.id,
+    name: raw.name,
+    symbol: raw.symbol,
+    nameKr: raw.name_kr,
+    strategyType: raw.strategy_type,
+    executionMode: raw.execution_mode,
+    sidePolicy: raw.side_policy,
+    rule: raw.rule
+      ? { indicators: raw.rule.indicators.map(toIndicator) }
+      : null,
+    sizing: toSizing(raw.sizing),
+    active: raw.active,
+    createdAt: raw.created_at,
+    lastSignal: raw.last_signal ? toSignal(raw.last_signal) : null,
   };
 }
