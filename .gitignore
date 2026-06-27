@@ -1,5 +1,4 @@
 .omc/
-.claude/
 
 # Environment files — contains KIS API secrets, NEVER commit
 .env
