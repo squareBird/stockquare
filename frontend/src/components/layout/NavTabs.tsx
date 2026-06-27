@@ -11,9 +11,9 @@ interface NavTab {
 
 const NAV_TABS: NavTab[] = [
   { href: '/dashboard', label: 'Dashboard', shortLabel: '홈' },
-  { href: '/trading', label: 'Trading', shortLabel: '거래' },
   { href: '/portfolio', label: 'Portfolio', shortLabel: '포트' },
   { href: '/strategy', label: 'Strategy', shortLabel: '전략' },
+  { href: '/trading', label: 'Trading', shortLabel: '거래' },
 ];
 
 export default function NavTabs() {
