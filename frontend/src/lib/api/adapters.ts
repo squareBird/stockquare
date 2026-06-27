@@ -15,6 +15,13 @@ import type {
   WatchlistItem,
   WatchlistItemError,
 } from '@/types/dashboard';
+import type {
+  ChatResponse,
+  ConfirmResponse,
+  PendingAction,
+  Recommendation,
+  ToolCallResult,
+} from '@/types/assistant';
 import type { Order, OrderSide, OrderStatus, OrderType } from '@/types/orders';
 import type { Holding, HoldingError } from '@/types/portfolio';
 import type {
@@ -344,4 +351,80 @@ export function toStrategy(raw: StrategyResponse): Strategy {
     createdAt: raw.created_at,
     lastSignal: raw.last_signal ? toSignal(raw.last_signal) : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Assistant adapters
+// ---------------------------------------------------------------------------
+
+interface ToolCallResultResponse {
+  tool: string;
+  input: Record<string, unknown>;
+  ok: boolean;
+  error_code?: string | null;
+}
+
+interface PendingActionResponse {
+  id: string;
+  tool: string;
+  summary: string;
+  input: Record<string, unknown>;
+}
+
+interface RecommendationResponse {
+  symbol: string;
+  name: string;
+  price?: number | null;
+  change_rate?: number | null;
+  reason: string;
+}
+
+interface ChatResponseRaw {
+  reply: string;
+  tool_calls: ToolCallResultResponse[];
+  pending_actions: PendingActionResponse[];
+  recommendations: RecommendationResponse[];
+}
+
+interface ConfirmResponseRaw {
+  ok: boolean;
+  tool: string;
+  result: Record<string, unknown>;
+  message: string;
+}
+
+function toToolCallResult(raw: ToolCallResultResponse): ToolCallResult {
+  return { tool: raw.tool, input: raw.input, ok: raw.ok, errorCode: raw.error_code };
+}
+
+export function toPendingAction(raw: PendingActionResponse): PendingAction {
+  return { id: raw.id, tool: raw.tool, summary: raw.summary, input: raw.input };
+}
+
+function toRecommendation(raw: RecommendationResponse): Recommendation {
+  return {
+    symbol: raw.symbol,
+    name: raw.name,
+    price: raw.price,
+    changeRate: raw.change_rate,
+    reason: raw.reason,
+  };
+}
+
+export function toChatResponse(raw: ChatResponseRaw): ChatResponse {
+  return {
+    reply: raw.reply,
+    toolCalls: raw.tool_calls.map(toToolCallResult),
+    pendingActions: raw.pending_actions.map(toPendingAction),
+    recommendations: raw.recommendations.map(toRecommendation),
+  };
+}
+
+export function toConfirmResponse(raw: ConfirmResponseRaw): ConfirmResponse {
+  return { ok: raw.ok, tool: raw.tool, result: raw.result, message: raw.message };
+}
+
+// pending_action → wire shape for the confirm request body (camelCase → snake).
+export function pendingActionToWire(action: PendingAction): PendingActionResponse {
+  return { id: action.id, tool: action.tool, summary: action.summary, input: action.input };
 }
