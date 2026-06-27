@@ -10,6 +10,18 @@
 #        KIS_ACCOUNT_NO=...
 #   2. `docker compose up --build -d`
 #   3. Backend: http://localhost:8000   Frontend: http://localhost:3000/dashboard
+#
+# AI assistant note (see .aicontext/guides/DEPLOYMENT.md):
+#   The assistant runs the user's LOCAL Claude Code via the Claude Agent SDK,
+#   so the backend must run on the host (not in a container) when the assistant
+#   is enabled. The `backend` service below is gated behind the `containerized`
+#   compose profile; it is NOT started by a bare `docker compose up`.
+#
+#   - AI-enabled (default): run DB (+ optional frontend) in Docker, backend local
+#       docker compose up -d postgres
+#       cd backend && uvicorn app.main:app --reload --port 8000
+#   - No-AI / fully containerized:
+#       docker compose --profile containerized up --build -d
 
 services:
   postgres:
@@ -34,6 +46,10 @@ services:
       - stockquare-net
 
   backend:
+    # Gated behind the `containerized` profile: the AI assistant needs the
+    # backend on the host to reach the local Claude Code, so a bare
+    # `docker compose up` intentionally does NOT start this service.
+    profiles: ["containerized"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -72,9 +88,10 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    depends_on:
-      backend:
-        condition: service_started
+    # No depends_on backend: the browser fetches the backend over the host
+    # (NEXT_PUBLIC_API_BASE_URL), and in the AI-enabled topology the backend
+    # runs on the host (not as a container), so a hard dependency would break
+    # `docker compose up frontend`.
     networks:
       - stockquare-net
 

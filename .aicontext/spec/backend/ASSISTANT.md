@@ -7,25 +7,39 @@ assistant reasons over the request, calls **tools** that wrap existing services,
 and replies in Korean. The assistant is the *orchestration* layer — it owns no
 business logic of its own; every effect goes through an existing service.
 
+> **Execution model.** The assistant does **not** call the Anthropic API
+> directly. It runs the user's **locally-installed Claude Code** through the
+> **Claude Agent SDK for Python** (`claude-agent-sdk`). The backend hosts an
+> in-process MCP server whose tools wrap existing services; Claude Code drives
+> the agent loop and calls those tools. This is a **local-first** design: the
+> backend and Claude Code run on the same machine, under the user's own Claude
+> login. See `DEPLOYMENT.md` for the deployment contract and prerequisites.
+
 > **Safety stance.** Read tools (recommend, search, quote, ranking) run freely.
 > **Mutating tools** (watchlist add, …) are never executed inline — the
 > assistant *proposes* them and the client must send an explicit confirmation
 > turn before they run. Trading/order placement is **out of scope for Phase 1**
-> and no order tool is registered.
+> and no order tool is registered. Claude Code's built-in tools (Bash, Read,
+> Write, Edit, WebFetch, …) are **fully disabled**; the model may only call the
+> Stockquare MCP tools (§2.1).
 
 ## 0. Concepts
 
 | Term | Meaning |
 |------|---------|
 | **Conversation** | An ordered list of `messages` the client sends on every turn (stateless server; the client owns history). |
-| **Tool** | A typed capability the model may call. Each tool wraps one existing service method. Tools are `read` or `mutate`. |
-| **Tool loop** | Server-side agentic loop: model → tool_use → server runs tool → tool_result → model, until the model returns a final text answer (bounded by `ASSISTANT_MAX_TURNS`). |
-| **Proposed action** | A `mutate` tool the model wants to run. It is **not executed**; it is returned to the client as a `pending_action` for confirmation. |
-| **Confirmation turn** | A follow-up request carrying the `pending_action` id the user approved; only then does the server execute the mutate tool. |
+| **Tool** | A typed capability the model may call. Each tool wraps one existing service method, exposed via the in-process MCP server. Tools are `read` or `mutate`. |
+| **Agent loop** | The Claude Agent SDK runs the model → tool_use → tool_result → model loop **inside Claude Code**; the backend does not hand-roll it. Bounded by `assistant_max_turns`. |
+| **Proposed action** | A `mutate` tool the model wants to run. The `can_use_tool` permission callback **denies** it and records a `pending_action` for confirmation instead of executing it. |
+| **Confirmation turn** | A follow-up request carrying the `pending_action` the user approved; the server executes the wrapped service **directly, without invoking the model**. |
+| **Turn collector** | A request-scoped object the tool handlers write to (recommendations, tool-call results, pending actions). The service reads it after the loop to build the response. |
 
 ## 1. Endpoints
 
-All assistant endpoints live under `/api/v1/assistant`.
+All assistant endpoints live under `/api/v1/assistant`. **The wire contract
+(request/response shapes) is unchanged from the API-key design**, so the
+frontend spec (`frontend/ASSISTANT.md`) applies as-is — only the server-side
+execution mechanism changed.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -100,7 +114,7 @@ class ToolCallResult(BaseModel):
 
 class PendingAction(BaseModel):
     id: str                            # opaque, stable within this response
-    tool: str
+    tool: str                          # bare tool name, e.g. "add_to_watchlist"
     summary: str                       # human-readable, Korean
     input: dict                        # exact arguments to execute on confirm
 
@@ -118,11 +132,18 @@ class ChatResponse(BaseModel):
     recommendations: list[Recommendation]
 ```
 
+> **Tool naming on the wire.** Inside the SDK, tools are namespaced
+> `mcp__stockquare__<tool>` (§2.1). On the **wire** (`tool_calls[].tool`,
+> `pending_actions[].tool`) the bare name (`rank_stocks`, `add_to_watchlist`) is
+> used so the client and the `/confirm` registry stay decoupled from the MCP
+> prefix.
+
 ### POST /api/v1/assistant/confirm
 
 Executes one approved mutate action. The client echoes back the
-`PendingAction` it received (the server is stateless and re-validates the input
-against the tool schema before running it).
+`PendingAction` it received. The server is stateless and **re-validates the
+input against the tool's Pydantic schema before running it — it never invokes
+the model on confirm**; it calls the wrapped service directly.
 
 **Request**
 ```json
@@ -163,7 +184,8 @@ name → 400 `INVALID_ACTION`.
 ## 2. Tools
 
 Each tool maps to exactly one existing service call. The tool registry is the
-**only** surface the model can affect the system through.
+**only** surface the model can affect the system through — built-in Claude Code
+tools are disabled (§5.2).
 
 | Tool | Kind | Wraps | Purpose |
 |------|------|-------|---------|
@@ -179,30 +201,61 @@ duplicate rejection, and symbol validation. Per-symbol failures are collected
 into `result.skipped` with their `error_code`; the partial success still
 returns `ok: true`.
 
-### Tool schemas (Anthropic tool-use format)
+### 2.1 Tool definition (Claude Agent SDK, in-process MCP server)
 
-Tools are declared with JSON Schema `input_schema` and passed to the model via
-the Anthropic Messages API `tools` parameter. Example:
+Tools are declared with the SDK `@tool` decorator and bundled into a single
+in-process MCP server with `create_sdk_mcp_server`. The server runs **inside the
+backend process** (no subprocess, no network) — the handler is a plain Python
+async function that calls the existing service.
+
 ```python
-RANK_STOCKS_TOOL = {
-    "name": "rank_stocks",
-    "description": "Return top KRX stocks ranked by a condition. Use for "
-                   "recommendation requests like '등락률 상위 종목 추천'.",
-    "input_schema": {
+from claude_agent_sdk import tool, create_sdk_mcp_server, ToolAnnotations
+
+@tool(
+    "rank_stocks",
+    "Return top KRX stocks ranked by a condition. Use for recommendation "
+    "requests like '등락률 상위 종목 추천'.",
+    {  # full JSON Schema dict — required for enums/ranges/defaults
         "type": "object",
         "properties": {
             "by": {"type": "string", "enum": ["fluctuation", "volume"]},
-            "direction": {"type": "string", "enum": ["up", "down"], "default": "up"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+            "direction": {"type": "string", "enum": ["up", "down"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
         },
         "required": ["by"],
     },
-}
+    annotations=ToolAnnotations(readOnlyHint=True),  # allows parallel read calls
+)
+async def rank_stocks(args: dict) -> dict:
+    params = RankStocksArgs(**args)              # Pydantic re-validation
+    ranked = await stocks_service.rank_stocks(...)
+    collector.add_recommendations(ranked)        # request-scoped collector (§4)
+    collector.record_call("rank_stocks", args, ok=True)
+    return {"content": [{"type": "text", "text": _summarize(ranked)}]}
+
+stockquare_server = create_sdk_mcp_server(
+    name="stockquare", version="1.0.0",
+    tools=[rank_stocks, search_stocks, get_quote, list_watchlist, add_to_watchlist],
+)
 ```
 
-Tool input is validated with a Pydantic model **before** the wrapped service is
-called (never trust model output directly). A schema-invalid tool call is
-returned to the model as a `tool_result` with `is_error: true` so it can retry.
+Notes that drive the design:
+
+- **Re-validate inside the handler.** The dict schema is for the model; the
+  handler re-parses `args` with a Pydantic model before calling the service
+  (never trust model output directly). On schema/validation failure the handler
+  returns `{"content": [...], "is_error": True}` so the loop continues and the
+  model can retry — it must **not** raise (an uncaught exception aborts the whole
+  `query()` call).
+- **`@tool` forwards only `content` and `is_error`** (Python in-process server
+  limitation — `structuredContent` is dropped). Therefore structured results
+  (recommendations) are **not** returned through the tool result; the handler
+  pushes them into the request-scoped **turn collector** (§4), and the service
+  reads the collector after the loop. The `content` text is only what the model
+  reasons over.
+- **`read` tools** set `readOnlyHint=True` so Claude can batch them in parallel.
+  `add_to_watchlist` leaves the default (`destructiveHint=True`) and is gated by
+  the permission callback (§4.1) — it is **never** placed in `allowed_tools`.
 
 ## 3. KIS Ranking (new capability in `stocks`)
 
@@ -236,101 +289,239 @@ class RankBy(str, Enum):
 
 Names are resolved from the in-memory master index (same pattern as
 `WATCHLIST.md` §2). On KIS failure the method raises the existing
-`KISAPIError` / `KISNotConfiguredError` — the tool wrapper converts it to a
-failed `ToolCallResult` rather than letting it abort the whole chat.
+`KISAPIError` / `KISNotConfiguredError` — the tool handler catches it and
+returns `is_error: True` with the `error_code` recorded in the collector,
+rather than letting it abort the whole chat.
 
-## 4. Agentic Loop
+## 4. Agent Loop (delegated to the Claude Agent SDK)
+
+The backend does **not** implement the tool loop. It configures the SDK and
+iterates the message stream:
 
 ```
-1. Build system prompt (static, prompt-cached) + tools + messages.
-2. Call Anthropic Messages API.
-3. If stop_reason == "tool_use":
-     for each tool_use block:
-       - read tool   → validate input, run service, append tool_result
-       - mutate tool → DO NOT run; record a PendingAction, append a
-                       tool_result telling the model it is "awaiting user
-                       confirmation" so it stops asking to run it again
-     loop back to step 2 (bounded by ASSISTANT_MAX_TURNS, default 5)
-4. stop_reason == "end_turn" → return final text as `reply`.
+1. Build a request-scoped TurnCollector.
+2. Build ClaudeAgentOptions:
+     - mcp_servers   = {"stockquare": stockquare_server}
+     - allowed_tools = ["mcp__stockquare__rank_stocks",
+                        "mcp__stockquare__search_stocks",
+                        "mcp__stockquare__get_quote",
+                        "mcp__stockquare__list_watchlist"]   # read tools only
+       (add_to_watchlist is intentionally NOT pre-approved — it falls through
+        to can_use_tool)
+     - tools          = []          # remove ALL built-in tools from context
+     - permission_mode = "default"  # unmatched tools → can_use_tool
+     - can_use_tool   = mutate_gate (§4.1)
+     - system_prompt  = static Korean system prompt (§4.2)
+     - max_turns      = assistant_max_turns
+     - model          = assistant_model (alias, e.g. "haiku")
+     - setting_sources = []         # do NOT load user ~/.claude or project settings
+3. Translate ChatRequest.messages into the SDK prompt:
+     - The latest user message is the prompt.
+     - Prior turns are replayed via session resume OR a serialized transcript
+       (Phase 1 choice: see §4.3).
+4. async for message in query(prompt, options):
+     - AssistantMessage  → accumulate text blocks into `reply`
+     - ToolUseBlock      → (handler already ran; collector recorded it)
+     - ResultMessage     → loop done; `result` is the final text
+5. Build ChatResponse from `reply` + collector (tool_calls, recommendations,
+   pending_actions).
 ```
 
-- The loop budget (`ASSISTANT_MAX_TURNS`) bounds tool round-trips; exceeding it
-  returns the best partial answer with a note.
-- Recommendations surfaced by `rank_stocks` / `search_stocks` are collected into
-  `recommendations[]` so the client can render them as cards (and offer "add to
-  watchlist") independent of the prose `reply`.
-- The system prompt instructs the model: answer in Korean; never claim a
-  mutation succeeded — propose it; cite symbols by code+name.
+- The loop budget (`assistant_max_turns`) bounds tool round-trips; on a
+  `ResultMessage` with `subtype != "success"` (e.g. max turns / error during
+  execution) the best partial `reply` is returned with a note appended.
+- Recommendations surfaced by `rank_stocks` / `search_stocks` are collected by
+  their handlers into `collector.recommendations` so the client renders cards
+  independent of the prose `reply`.
 
-## 5. Anthropic Integration
+### 4.1 Mutation gate — `can_use_tool` callback
 
-- SDK: `anthropic` (async client). Shared with `STRATEGY.md` §10 (`strategy_ai`).
-- Default model: `claude-haiku-4-5-20251001` (fast/cheap for tool routing);
-  configurable via `ASSISTANT_MODEL`. Heavier reasoning can opt into a larger
-  model later.
-- **Prompt caching** applied to the static system prompt + tool definitions
-  (`cache_control`) to cut cost across turns.
-- Structured/tool output only — no free-text scraping of the model's prose for
-  actions.
+When the model calls `mcp__stockquare__add_to_watchlist`, it is **not** in
+`allowed_tools`, so (in `permission_mode="default"`) the SDK routes the call to
+the `can_use_tool` callback. The callback **denies** execution and records a
+`PendingAction` instead:
 
-### Settings (`app/core/config.py`)
+```python
+async def mutate_gate(tool_name, input, context):
+    if tool_name == "mcp__stockquare__add_to_watchlist":
+        args = AddToWatchlistArgs(**input)        # re-validate
+        collector.add_pending_action(
+            tool="add_to_watchlist",
+            summary=_summ(args),
+            input=args.model_dump(),
+        )
+        # Deny so the tool does NOT run; tell the model to stop and ask the user.
+        return PermissionResultDeny(
+            message="Awaiting explicit user confirmation; do not retry. "
+                    "Ask the user to confirm in Korean.",
+        )
+    # Any other unexpected tool is denied outright.
+    return PermissionResultDeny(message="Tool not permitted.")
+```
+
+The model receives the denial as a tool_result, stops retrying, and produces a
+Korean confirmation prompt as its final `reply`. The `pending_action` is
+returned to the client, which renders a confirm gate. **Execution happens only
+on `/confirm`, which bypasses the model entirely** and calls
+`WatchlistService.add_watchlist` directly after re-validating the echoed input.
+
+> Exact callback signature and the `PermissionResultAllow` / `PermissionResultDeny`
+> types must be confirmed against the SDK reference
+> (https://code.claude.com/docs/en/agent-sdk/permissions and
+> `/en/agent-sdk/user-input`) at implementation; behavior above is the contract.
+
+### 4.2 System prompt
+
+Static, instructs the model to: answer in Korean; use the Stockquare tools and
+nothing else; cite symbols by code+name; keep replies concise; never claim a
+mutation succeeded. **Critically, it must tell the model to actually *call* the
+mutate tool** (`add_to_watchlist`) when the user requests it — not to ask for
+confirmation in prose. The confirmation gate is the `can_use_tool` deny (§4.1);
+if the model only asks in text without calling the tool, no `pending_action` is
+produced and the client renders no confirm gate. Defined once and reused every
+turn.
+
+### 4.2.1 Streaming-mode prompt (SDK constraint)
+
+The `can_use_tool` callback **requires streaming mode**: the SDK rejects a
+plain-string prompt when `can_use_tool` is set. The runner therefore passes the
+prompt as a single-message `AsyncIterable[dict]`:
+```python
+async def _single_user_prompt(text):
+    yield {"type": "user", "message": {"role": "user", "content": text},
+           "parent_tool_use_id": None, "session_id": "default"}
+```
+This is unidirectional streaming (all input upfront), not interactive — the loop
+still returns one final reply per turn.
+
+### 4.3 Conversation continuity
+
+Phase 1 is stateless on the server. Two viable mappings of the client-owned
+history onto the SDK:
+
+- **(a) Single-prompt replay** — fold prior turns into the prompt text each
+  call via `query()`. Simplest; no session state. **Phase 1 default.**
+- **(b) Session resume** — capture `session_id` from the `init` SystemMessage
+  and pass `resume=session_id` on later turns. Lower latency / better context
+  but introduces local session state. Deferred to Phase 2 alongside streaming.
+
+## 5. Claude Agent SDK Integration
+
+- SDK: `claude-agent-sdk` (Python ≥ 3.10; project is 3.12 — OK). Async API.
+- The SDK spawns / talks to the **local Claude Code CLI**. Claude Code must be
+  installed and authenticated on the host (prerequisite — see `DEPLOYMENT.md`).
+- **No tool loop, no prompt-cache management, no manual Anthropic SDK** — the
+  SDK and Claude Code own all of that.
+
+### 5.1 Authentication
+
+The assistant uses **whatever credentials the local Claude Code CLI is logged in
+with** — i.e. the user's own Claude subscription via `claude` login. No
+`ANTHROPIC_API_KEY` is required for the default local flow.
+
+> **ToS note.** Anthropic does not permit third parties to *offer claude.ai
+> login* to *their* end users. Stockquare is a **personal, local-first** tool:
+> each user installs and logs into **their own** Claude Code. The deployment
+> guide must state this prerequisite explicitly. `ANTHROPIC_API_KEY` (or a
+> Bedrock/Vertex/Foundry provider) remains supported as an override for users
+> who prefer API-key billing.
+
+### 5.2 Tool surface lockdown (security-critical)
+
+Because the agent runs on the user's machine through Claude Code, the built-in
+tools (Bash, Read, Write, Edit, WebFetch, WebSearch, Glob, Grep, …) would grant
+the model shell/filesystem access. They are removed:
+
+- `tools=[]` → all built-ins dropped from the model's context.
+- `setting_sources=[]` → do **not** load the user's `~/.claude` settings,
+  `CLAUDE.md`, skills, or project rules into this agent.
+- `allowed_tools` lists only the four **read** MCP tools; `add_to_watchlist`
+  is gated by `can_use_tool`; everything else falls through to a deny.
+- `permission_mode="default"` (never `bypassPermissions` / `acceptEdits`).
+
+### Settings (`app/config.py`)
 
 | Setting | Env | Default | Notes |
 |---------|-----|---------|-------|
-| `anthropic_api_key` | `ANTHROPIC_API_KEY` | `""` | Missing → assistant endpoints return 503 `ASSISTANT_NOT_CONFIGURED`; rest of app unaffected (same tolerance as KIS creds). |
-| `assistant_model` | `ASSISTANT_MODEL` | `claude-haiku-4-5-20251001` | |
-| `assistant_max_turns` | `ASSISTANT_MAX_TURNS` | `5` | Tool-loop round-trip cap. |
 | `assistant_enabled` | `ASSISTANT_ENABLED` | `true` | Global kill switch for the feature. |
+| `assistant_model` | `ASSISTANT_MODEL` | `haiku` | Model alias passed to the SDK. |
+| `assistant_max_turns` | `ASSISTANT_MAX_TURNS` | `5` | SDK `max_turns` — tool-loop round-trip cap. |
+| `assistant_max_budget_usd` | `ASSISTANT_MAX_BUDGET_USD` | `null` | Optional SDK `max_budget_usd` per turn. |
+| `assistant_cli_path` | `ASSISTANT_CLI_PATH` | `null` | Override path to the `claude` executable (else SDK auto-discovers). |
+
+Readiness is determined at runtime by whether the Claude Code CLI is present and
+authenticated (a startup/health probe), **not** by an API key. If unavailable,
+assistant endpoints return 503 `ASSISTANT_NOT_CONFIGURED`; the rest of the app
+is unaffected (same tolerance as KIS creds).
 
 ## 6. Error Handling
 
 | Scenario | HTTP | Code |
 |----------|------|------|
-| `ANTHROPIC_API_KEY` missing / `assistant_enabled=false` | 503 | `ASSISTANT_NOT_CONFIGURED` |
+| `assistant_enabled=false` / Claude Code CLI missing or not logged in | 503 | `ASSISTANT_NOT_CONFIGURED` |
 | Request validation (empty / too many messages) | 422 | — |
-| Anthropic API failure or timeout | 502 | `ASSISTANT_API_ERROR` |
-| Tool-loop budget exceeded | 200 | — (partial `reply`, note appended) |
+| SDK / Claude Code failure, timeout, or budget abort | 502 | `ASSISTANT_API_ERROR` |
+| Tool-loop budget exceeded (max_turns) | 200 | — (partial `reply`, note appended) |
 | Confirm a non-mutate / unknown tool | 400 | `INVALID_ACTION` |
 | Individual tool execution failed | 200 | — (recorded in `tool_calls[].ok=false` with `error_code`) |
 | KIS-dependent tool with creds missing | 200 | — (`tool_calls[].error_code = KIS_NOT_CONFIGURED`) |
 
 The chat endpoint degrades gracefully: a single failed tool never 500s the whole
-turn — it becomes a failed `ToolCallResult` the model can narrate around.
-New exception: `AssistantNotConfiguredError` (503 / `ASSISTANT_NOT_CONFIGURED`),
-`AssistantAPIError` (502 / `ASSISTANT_API_ERROR`) in `app/core/exceptions.py`.
+turn — its handler returns `is_error: True`, becoming a failed `ToolCallResult`
+the model can narrate around. New exceptions: `AssistantNotConfiguredError`
+(503 / `ASSISTANT_NOT_CONFIGURED`), `AssistantAPIError`
+(502 / `ASSISTANT_API_ERROR`) in `app/core/exceptions.py`.
 
 ## 7. Data Model
 
 Phase 1 is **stateless** — no conversation persistence. The client owns history
-and replays it each turn. (Phase 2 may persist conversations for audit; see §9.)
+and replays it each turn. (Phase 2 may persist conversations / SDK sessions for
+audit; see §9.)
 
 ## 8. Module Mapping
 
 | Component | File | Layer |
 |-----------|------|-------|
 | Assistant endpoints | `app/api/v1/assistant.py` | api |
-| Assistant service (agentic loop) | `app/services/assistant.py` | services |
-| Tool registry + schemas + wrappers | `app/services/assistant_tools.py` | services |
-| Anthropic client wrapper | `app/services/anthropic_client.py` | services |
+| Assistant service (SDK orchestration) | `app/services/assistant.py` | services |
+| Tool registry: `@tool` defs + MCP server + handlers | `app/services/assistant_tools.py` | services |
+| Turn collector + permission gate | `app/services/assistant_tools.py` | services |
+| Claude Agent SDK runner wrapper | `app/services/agent_runner.py` | services |
 | Stock ranking (new) | `app/services/stocks.py` (`rank_stocks`) + `app/kis/client.py` | services / kis |
 | Domain models | `app/models/assistant.py` | models |
 | Exceptions | `app/core/exceptions.py` | core |
-| Settings | `app/core/config.py` | core |
+| Settings | `app/config.py` | core |
 
-`api/` calls `services/assistant.py` only. The assistant service orchestrates
-the tool registry, which calls the **existing services** (`stocks`,
-`watchlist`) — it never calls `kis/` or `db/` directly for tool effects
+`api/` calls `services/assistant.py` only. The assistant service configures the
+SDK runner; the tool handlers call the **existing services** (`stocks`,
+`watchlist`) — they never call `kis/` or `db/` directly for tool effects
 (dependency rule in `PROJECT_STRUCTURE.md`). Router registration in
 `app/api/v1/router.py`.
 
+### Testing (GOLDEN_RULE §4)
+
+- Mock the SDK boundary (`query` / `ClaudeSDKClient`) to yield canned
+  `AssistantMessage` / `ToolUseBlock` / `ResultMessage` streams — the same
+  discipline as mocking KIS responses. No real Claude Code spawn in unit tests.
+- Test tool handlers directly: schema re-validation, `is_error` on bad input,
+  collector population, and that KIS failures become `is_error` rather than
+  raising.
+- Test the `can_use_tool` gate: `add_to_watchlist` is denied and a
+  `PendingAction` is recorded; `/confirm` executes the service without the model.
+- Test the lockdown config: `tools=[]`, `setting_sources=[]`, read-only
+  `allowed_tools`, `permission_mode="default"`.
+
 ## 9. Phasing & Extensions
 
-- **Phase 1** — Non-streaming `chat` + `confirm`, 5 read/mutate tools above,
-  KIS ranking added to `stocks`, confirmation gate on mutations, no order tool,
-  no persistence.
+- **Phase 1** — Non-streaming `chat` + `confirm` via the Claude Agent SDK over
+  local Claude Code; 5 read/mutate tools; KIS ranking added to `stocks`;
+  `can_use_tool` confirmation gate on mutations; built-in tools locked down; no
+  order tool; no persistence; single-prompt replay (§4.3a).
 - **Phase 2** — SSE streaming (`text/event-stream`) so tokens render live;
-  conversation persistence + audit log of executed actions.
+  SDK **session resume** (§4.3b) for lower latency; conversation persistence +
+  audit log of executed actions.
 - **Phase 3** — Register `strategy` tools (create/evaluate a strategy from NL)
   and, behind the existing trading safety gates + an extra confirmation, an
   order-placement tool. Real-money actions inherit `TRADING.md` / `STRATEGY.md`
-  gate stacks; the assistant never bypasses them.
+  gate stacks; the assistant never bypasses them, and order tools are gated by
+  `can_use_tool` exactly like `add_to_watchlist`.

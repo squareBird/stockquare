@@ -116,9 +116,13 @@ pending implicitly cancels it.
 - **Loading**: typing indicator bubble; composer disabled.
 - **Tool failures**: backend returns them inside the reply prose — no special
   client handling beyond rendering the text (failed tools are not cards).
-- **503 `ASSISTANT_NOT_CONFIGURED`**: show a non-blocking inline notice
-  ("AI 어시스턴트가 아직 설정되지 않았습니다.") and keep the panel usable for
-  retry; do not crash the app. The FAB still renders.
+- **503 `ASSISTANT_NOT_CONFIGURED`**: the backend could not reach a
+  logged-in local Claude Code (or the feature is disabled). Show a non-blocking
+  inline notice ("AI 어시스턴트를 사용할 수 없습니다. 로컬 Claude Code 설치 및
+  로그인 상태를 확인해 주세요.") and keep the panel usable for retry; do not
+  crash the app. The FAB still renders. (Backend runs the assistant through the
+  user's local Claude Code via the Claude Agent SDK — see backend `ASSISTANT.md`
+  and `DEPLOYMENT.md`; the wire contract is otherwise unchanged.)
 - **502 `ASSISTANT_API_ERROR`**: append an assistant-style error bubble with a
   retry affordance; preserve the user's last message.
 - **Empty state**: on first open, a short greeting + 2–3 example prompt chips
