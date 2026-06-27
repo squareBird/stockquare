@@ -46,3 +46,25 @@ class StockHistoryResponse(BaseModel):
     symbol: str
     period: ChartPeriod
     candles: list[Candle]
+
+
+class RankBy(str, Enum):
+    """Market-wide ranking dimension for `StocksService.rank_stocks`."""
+
+    FLUCTUATION = "fluctuation"
+    VOLUME = "volume"
+
+
+class RankDirection(str, Enum):
+    """Sort direction for fluctuation ranking (rising vs falling)."""
+
+    UP = "up"
+    DOWN = "down"
+
+
+class RankedStock(BaseModel):
+    symbol: str
+    name: str
+    price: int
+    change_rate: float
+    volume: int | None = None

@@ -9,8 +9,15 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.exceptions import InvalidQueryError, InvalidSymbolError, KISAPIError
 from app.kis.client import KISClient
-from app.kis.models import DailyChartCandle
-from app.models.stocks import Candle, ChartPeriod
+from app.kis.models import DailyChartCandle, RankingRow
+from app.models.stocks import (
+    Candle,
+    ChartPeriod,
+    RankBy,
+    RankDirection,
+    RankedStock,
+)
+from app.services._helpers import to_float, to_int
 from app.services.stock_index import StockMasterIndex, StockMasterRow
 
 logger = logging.getLogger(__name__)
@@ -135,6 +142,79 @@ class StocksService:
             market=market,
         )
         return [item][:limit]
+
+    async def get_quote(self, symbol: str) -> RankedStock:
+        """Return the current price/change for a single 6-digit KR symbol.
+
+        Reuses the ranking result shape (`RankedStock`) since it carries the
+        same price/change fields. Raises InvalidSymbolError for a malformed or
+        unknown code; KIS failures propagate as KISAPIError.
+        """
+        symbol = symbol.strip()
+        if not SYMBOL_PATTERN.match(symbol):
+            raise InvalidSymbolError(symbol)
+        price = await self._kis.inquire_stock_price(symbol)
+        out = price.output
+        return RankedStock(
+            symbol=symbol,
+            name=self._resolve_name(symbol, out.name),
+            price=to_int(out.price),
+            change_rate=to_float(out.change_rate),
+            volume=to_int(out.volume),
+        )
+
+    async def rank_stocks(
+        self,
+        *,
+        by: RankBy,
+        direction: RankDirection = RankDirection.UP,
+        limit: int = 5,
+    ) -> list[RankedStock]:
+        """Return the top KRX stocks ranked by a market-wide condition.
+
+        Used by the assistant's recommendation tool and any future screener.
+        Names are resolved from the in-memory master index (same pattern as
+        watchlist enrichment) rather than the KIS row name, falling back to
+        the KIS name then the symbol. On KIS failure the underlying
+        `KISAPIError` / `KISNotConfiguredError` propagates to the caller.
+
+        Args:
+            by: Ranking dimension — fluctuation (등락률) or volume (거래량).
+            direction: For fluctuation, up = top gainers, down = top losers.
+                Ignored for volume ranking.
+            limit: Maximum rows to return (1-20).
+
+        Returns:
+            Up to ``limit`` ranked stocks, best first.
+        """
+        limit = max(1, min(limit, 20))
+        if by == RankBy.VOLUME:
+            resp = await self._kis.ranking_volume(count=limit)
+        else:
+            resp = await self._kis.ranking_fluctuation(
+                rising=direction == RankDirection.UP,
+                count=limit,
+            )
+        return [self._to_ranked_stock(row) for row in resp.output[:limit]]
+
+    def _to_ranked_stock(self, row: RankingRow) -> RankedStock:
+        name = self._resolve_name(row.symbol, row.name)
+        return RankedStock(
+            symbol=row.symbol,
+            name=name,
+            price=to_int(row.price),
+            change_rate=to_float(row.change_rate),
+            volume=to_int(row.volume),
+        )
+
+    def _resolve_name(self, symbol: str, fallback: str = "") -> str:
+        """Resolve a display name from the master index, then fallbacks."""
+        index_row = self._index.by_symbol(symbol)
+        if index_row is not None:
+            name = index_row.name_ko or index_row.name_en
+            if name:
+                return name
+        return fallback or symbol
 
     async def get_history(self, symbol: str, period: ChartPeriod) -> list[Candle]:
         """Return the daily OHLCV candle series for a 6-digit KR symbol.

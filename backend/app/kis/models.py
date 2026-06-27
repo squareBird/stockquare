@@ -243,3 +243,35 @@ class DailyChartResponse(BaseModel):
     msg_cd: str | None = None
     msg1: str | None = None
     output2: list[DailyChartCandle] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Rankings — fluctuation (등락률 순위) / volume (거래량 순위)
+# ---------------------------------------------------------------------------
+
+
+class RankingRow(BaseModel):
+    """One row of a KIS ranking response output.
+
+    Both the fluctuation (`FHPST01700000`) and volume-rank (`FHPST01710000`)
+    endpoints return a list of rows that share these field names. The Korean
+    name (`hts_kor_isnm`) is present here, but callers still prefer the master
+    index for consistency with the rest of the app.
+    """
+
+    symbol: str = Field(alias="stck_shrn_iscd", default="")
+    name: str = Field(alias="hts_kor_isnm", default="")
+    price: str = Field(alias="stck_prpr", default="0")
+    change_rate: str = Field(alias="prdy_ctrt", default="0")
+    volume: str = Field(alias="acml_vol", default="0")
+
+    model_config = {"populate_by_name": True}
+
+
+class RankingResponse(BaseModel):
+    """Envelope for the ranking endpoints (output is a list)."""
+
+    rt_cd: str
+    msg_cd: str | None = None
+    msg1: str | None = None
+    output: list[RankingRow] = Field(default_factory=list)
