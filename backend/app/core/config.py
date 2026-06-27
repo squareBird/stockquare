@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     strategy_max_order_amount: int = Field(default=50_000)
     strategy_max_daily_orders: int = Field(default=5)
 
+    # Assistant — Claude Agent SDK over local Claude Code (ASSISTANT.md).
+    # The assistant runs the user's locally-installed Claude Code via the
+    # Claude Agent SDK; it does NOT call the Anthropic API directly. Readiness
+    # is probed at request time (CLI present + logged in), not via an API key.
+    # `assistant_model` is a model alias passed to the SDK; `assistant_cli_path`
+    # overrides the `claude` executable path when auto-discovery fails.
+    assistant_enabled: bool = Field(default=True)
+    assistant_model: str = Field(default="haiku")
+    assistant_max_turns: int = Field(default=5)
+    assistant_max_budget_usd: float | None = Field(default=None)
+    assistant_cli_path: str | None = Field(default=None)
+
     # CORS — comma-separated list via `CORS_ORIGINS` env var, e.g.
     # `CORS_ORIGINS=http://localhost:3000,https://stockquare.app`.
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
