@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.models.stocks import Candle
 from app.models.strategy import SignalAction
-from app.services.indicators import evaluate_rule
+from app.services.strategy.indicators import evaluate_rule
 
 
 def _candles(closes: list[float]) -> list[Candle]:

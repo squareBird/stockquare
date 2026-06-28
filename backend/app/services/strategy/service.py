@@ -15,23 +15,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import InvalidSymbolError, StrategyNotFoundError
 from app.db.models import Strategy, StrategySignal
-from app.models.stocks import ChartPeriod
+from app.models.stocks import ChartInterval
 from app.models.strategy import (
     SignalResponse,
     StrategyCreateRequest,
     StrategyResponse,
     StrategyUpdateRequest,
 )
-from app.services.indicators import evaluate_rule
 from app.services.stock_index import StockMasterIndex
 from app.services.stocks import StocksService
+from app.services.strategy.indicators import evaluate_rule
 
 logger = logging.getLogger(__name__)
 
-# Lookback window for indicator math. Three months of daily candles (~60
-# trading days) covers the Phase 1 indicators (longest is a 20-period MA /
-# Bollinger plus the prior bar needed to detect a crossover).
-_EVAL_PERIOD = ChartPeriod.THREE_MONTH
+# Candle granularity for indicator math. Daily candles over the service's
+# ~6-month window (~120 trading days) cover the Phase 1 indicators (longest is
+# a 20-period MA / Bollinger plus the prior bar needed to detect a crossover).
+_EVAL_INTERVAL = ChartInterval.DAY
 
 
 class StrategyService:
@@ -136,7 +136,7 @@ class StrategyService:
     async def evaluate(self, strategy_id: int) -> SignalResponse:
         """Evaluate a strategy now and persist the signal. Never executes."""
         strategy = await self._get_or_404(strategy_id)
-        candles = await self._stocks.get_history(strategy.symbol, _EVAL_PERIOD)
+        candles = await self._stocks.get_history(strategy.symbol, _EVAL_INTERVAL)
         rule = strategy.config.get("rule") or {}
         indicators = rule.get("indicators", [])
         result = evaluate_rule(indicators, candles)
