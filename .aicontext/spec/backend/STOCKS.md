@@ -104,9 +104,9 @@ KIS market code mapping:
 
 ## 2. Stock Price History
 
-Daily OHLCV series that backs the frontend price chart (`CHARTS.md`) and the
-strategy engine's indicator math (`STRATEGY.md` §6). One KIS call per request;
-no caching in Phase 1.
+OHLCV series that backs the frontend price chart (`CHARTS.md`) and the strategy
+engine's indicator math (`STRATEGY.md` §6). One-or-more KIS calls per request
+(minute candles page backwards); no caching in Phase 1.
 
 ### GET /api/v1/stocks/{symbol}/history
 
@@ -114,26 +114,25 @@ no caching in Phase 1.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `symbol` (path) | string | Yes | — | 6-digit KRX code |
-| `period` (query) | enum | No | `1m` | One of `1w`, `1m`, `3m`, `1y` |
+| `interval` (query) | enum | No | `day` | One of `min`, `day`, `week`, `month` |
 
-`period` maps to a lookback window (counted back from today in KST) and the KIS
-period-division code:
+`interval` selects the **candle granularity** (not a lookback window). The
+visible range is derived per interval; the client only picks granularity. The
+day-family intervals share the daily endpoint via the KIS period-division code,
+while `min` uses the intraday endpoint:
 
-| `period` | Window | `FID_PERIOD_DIV_CODE` |
-|----------|--------|-----------------------|
-| `1w` | 7 days | `D` |
-| `1m` | 1 month | `D` |
-| `3m` | 3 months | `D` |
-| `1y` | 1 year | `D` |
-
-Intraday minute candles (`1d`) are deferred to Phase 2 (KIS
-`inquire-time-itemchartprice`, `FHKST03010200`).
+| `interval` | Candle | Visible window | KIS endpoint | `FID_PERIOD_DIV_CODE` |
+|------------|--------|----------------|--------------|-----------------------|
+| `min` | 1-minute (intraday) | current session | `inquire-time-itemchartprice` | — |
+| `day` | daily (일봉) | ~6 months (186d) | `inquire-daily-itemchartprice` | `D` |
+| `week` | weekly (주봉) | ~2 years (731d) | `inquire-daily-itemchartprice` | `W` |
+| `month` | monthly (월봉) | ~5 years (1827d) | `inquire-daily-itemchartprice` | `M` |
 
 **Response**:
 ```json
 {
   "symbol": "005930",
-  "period": "1m",
+  "interval": "day",
   "candles": [
     { "time": "2026-05-02", "open": 71000, "high": 72500, "low": 70800, "close": 72000, "volume": 12345678 }
   ]
@@ -141,18 +140,19 @@ Intraday minute candles (`1d`) are deferred to Phase 2 (KIS
 ```
 
 Candles are ordered **oldest → newest**. `time` is an ISO date (`YYYY-MM-DD`)
-for daily candles. lightweight-charts consumes this directly.
+for day/week/month candles, or **epoch seconds (int)** for `min` candles.
+lightweight-charts consumes both forms directly.
 
 **Response Model**:
 ```python
-class ChartPeriod(str, Enum):
-    ONE_WEEK = "1w"
-    ONE_MONTH = "1m"
-    THREE_MONTH = "3m"
-    ONE_YEAR = "1y"
+class ChartInterval(str, Enum):
+    MINUTE = "min"
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
 
 class Candle(BaseModel):
-    time: str        # YYYY-MM-DD
+    time: str | int  # YYYY-MM-DD (day/week/month) or epoch seconds (min)
     open: float
     high: float
     low: float
@@ -161,52 +161,84 @@ class Candle(BaseModel):
 
 class StockHistoryResponse(BaseModel):
     symbol: str
-    period: ChartPeriod
+    interval: ChartInterval
     candles: list[Candle]
 ```
 
 ### Behavior
 
-- Candles come from `inquire-daily-itemchartprice`. KIS returns rows
-  newest-first; the service reverses them to oldest → newest.
+- **Day-family** (`day`/`week`/`month`): candles come from
+  `inquire-daily-itemchartprice` with the matching `FID_PERIOD_DIV_CODE`. KIS
+  returns rows newest-first; the service reverses them to oldest → newest and
+  drops blank-date padding rows.
+- **Minute** (`min`): candles come from `inquire-time-itemchartprice`. KIS
+  returns ~30 candles per page ending at an `HHMMSS` anchor; the service pages
+  backwards from the current KST time (anchor stepped to one second below the
+  oldest candle each page), de-duplicates by epoch, and stops when a page is
+  empty / yields nothing new (hard cap: 16 pages). Times are converted from the
+  KIS `YYYYMMDD`+`HHMMSS` (KST, UTC+9) pair to epoch seconds.
 - Invalid 6-digit symbol (KIS `rt_cd != "0"`) → 400 `INVALID_SYMBOL`.
 - No rows in the window → 200 with `"candles": []` (not an error surface).
 
 ### KIS API Mapping
 
-| Field | KIS Endpoint | tr_id | KIS Field |
-|-------|-------------|-------|-----------|
-| time | `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` | `FHKST03010100` | `stck_bsop_date` |
-| open | Same | Same | `stck_oprc` |
-| high | Same | Same | `stck_hgpr` |
-| low | Same | Same | `stck_lwpr` |
-| close | Same | Same | `stck_clpr` |
-| volume | Same | Same | `acml_vol` |
+Day-family (`inquire-daily-itemchartprice`, `FHKST03010100`):
+| Field | KIS Field |
+|-------|-----------|
+| time | `stck_bsop_date` |
+| open | `stck_oprc` |
+| high | `stck_hgpr` |
+| low | `stck_lwpr` |
+| close | `stck_clpr` |
+| volume | `acml_vol` |
+
+Minute (`inquire-time-itemchartprice`, `FHKST03010200`):
+| Field | KIS Field |
+|-------|-----------|
+| time | `stck_bsop_date` + `stck_cntg_hour` → epoch seconds |
+| open | `stck_oprc` |
+| high | `stck_hgpr` |
+| low | `stck_lwpr` |
+| close | `stck_prpr` |
+| volume | `cntg_vol` |
 
 ### KIS Request Details
 
+Day-family:
 ```
 GET {base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice
-Headers:
-  authorization: Bearer {token}
-  appkey / appsecret / custtype: P
+Headers: authorization: Bearer {token}; appkey / appsecret / custtype: P
   tr_id: FHKST03010100
 Query:
   FID_COND_MRKT_DIV_CODE: "J"
   FID_INPUT_ISCD: {symbol}
   FID_INPUT_DATE_1: {from YYYYMMDD}
   FID_INPUT_DATE_2: {to YYYYMMDD}
-  FID_PERIOD_DIV_CODE: "D"
+  FID_PERIOD_DIV_CODE: "D" | "W" | "M"
   FID_ORG_ADJ_PRC: "0"   # 0 = adjusted (수정주가) price series
 ```
 
-Daily candles come back in the `output2` array.
+Minute (paged backwards):
+```
+GET {base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice
+Headers: authorization: Bearer {token}; appkey / appsecret / custtype: P
+  tr_id: FHKST03010200
+Query:
+  FID_ETC_CLS_CODE: ""
+  FID_COND_MRKT_DIV_CODE: "J"
+  FID_INPUT_ISCD: {symbol}
+  FID_INPUT_HOUR_1: {anchor HHMMSS}
+  FID_PW_DATA_INCU_YN: "Y"   # include pre-market so first bars aren't dropped
+```
 
-> **tr_id verification note**: `FHKST03010100` is the commonly-documented
-> daily-chart tr_id but, like the trading tr_ids in `TRADING.md`, it must be
-> verified against `koreainvestment/open-trading-api` (`examples_llm/`,
-> `legacy/rest/`) before merge. Any mismatch surfaces as `rt_cd != "0"` and is
-> captured by `_log_kis_error_body`.
+Candles come back in each response's `output2` array.
+
+> **tr_id verification note**: `FHKST03010100` (daily) and `FHKST03010200`
+> (minute) are the commonly-documented chart tr_ids but, like the trading
+> tr_ids in `TRADING.md`, must be verified against
+> `koreainvestment/open-trading-api` (`examples_llm/`, `legacy/rest/`) before
+> merge. Any mismatch surfaces as `rt_cd != "0"` and is captured by
+> `_log_kis_error_body`.
 
 ## 3. Error Handling
 
@@ -214,7 +246,7 @@ Daily candles come back in the `output2` array.
 |----------|-------------|------|-------------|
 | Empty query | 400 | `INVALID_QUERY` | Search query must not be empty |
 | `limit` out of range | 422 | — | FastAPI query validation |
-| Invalid `period` | 422 | — | FastAPI query validation against the enum |
+| Invalid `interval` | 422 | — | FastAPI query validation against the enum |
 | History symbol not found | 400 | `INVALID_SYMBOL` | KIS `rt_cd != "0"` for the requested code |
 | KIS credentials missing | 503 | `KIS_NOT_CONFIGURED` | Core KIS credentials not set |
 | Search KIS API failure | 200 | — | Logged and returned as empty result (not an error surface) |

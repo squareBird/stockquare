@@ -15,11 +15,12 @@ business logic of its own; every effect goes through an existing service.
 > backend and Claude Code run on the same machine, under the user's own Claude
 > login. See `DEPLOYMENT.md` for the deployment contract and prerequisites.
 
-> **Safety stance.** Read tools (recommend, search, quote, ranking) run freely.
-> **Mutating tools** (watchlist add, …) are never executed inline — the
-> assistant *proposes* them and the client must send an explicit confirmation
-> turn before they run. Trading/order placement is **out of scope for Phase 1**
-> and no order tool is registered. Claude Code's built-in tools (Bash, Read,
+> **Safety stance.** Read tools (recommend, search, quote, ranking, chart,
+> watchlist read, account/holdings) run freely. **Mutating tools** (watchlist
+> add / remove) are never executed inline — the assistant *proposes* them and
+> the client must send an explicit confirmation turn before they run.
+> Trading/order placement is **out of scope for Phase 1** and no order tool is
+> registered. Claude Code's built-in tools (Bash, Read,
 > Write, Edit, WebFetch, …) are **fully disabled**; the model may only call the
 > Stockquare MCP tools (§2.1).
 
@@ -187,18 +188,28 @@ Each tool maps to exactly one existing service call. The tool registry is the
 **only** surface the model can affect the system through — built-in Claude Code
 tools are disabled (§5.2).
 
-| Tool | Kind | Wraps | Purpose |
-|------|------|-------|---------|
-| `rank_stocks` | read | `stocks.rank_stocks` (§3 KIS ranking) | Condition-based recommendation: top stocks by fluctuation / volume. |
-| `search_stocks` | read | `stocks.search` | Resolve a name/keyword → symbols. |
-| `get_quote` | read | `stocks` price lookup (KIS `inquire-price`) | Current price/change for a symbol. |
-| `list_watchlist` | read | `watchlist.list_watchlist` | Read the user's current watchlist. |
-| `add_to_watchlist` | **mutate** | `watchlist.add_watchlist` (per symbol) | Add one or more symbols to the watchlist. |
+Tools are grouped by domain (lookup / chart / watchlist / portfolio) so the
+model — and the registry in `assistant/tools.py` — reason about capabilities by
+area.
 
-`add_to_watchlist` accepts a list but executes per-symbol through the existing
-`WatchlistService.add_watchlist`, which already enforces the 20-item cap,
-duplicate rejection, and symbol validation. Per-symbol failures are collected
-into `result.skipped` with their `error_code`; the partial success still
+| Domain | Tool | Kind | Wraps | Purpose |
+|--------|------|------|-------|---------|
+| Lookup | `rank_stocks` | read | `stocks.rank_stocks` (§3 KIS ranking) | Condition-based recommendation: top stocks by fluctuation / volume. |
+| Lookup | `search_stocks` | read | `stocks.search_stocks` | Resolve a name/keyword → symbols. |
+| Lookup | `get_quote` | read | `stocks.get_quote` (KIS `inquire-price`) | Current price/change for a symbol. |
+| Chart | `get_chart` | read | `stocks.get_history` | Open the symbol's chart in the Trading tab (emits an `open_chart` view action) and return a compact trend summary. Candle granularity `interval` = `min`/`day`/`week`/`month`, default `day`. |
+| Watchlist | `list_watchlist` | read | `watchlist.list_watchlist` | Read the user's current watchlist. |
+| Watchlist | `add_to_watchlist` | **mutate** | `watchlist.add_watchlist` (per symbol) | Add one or more symbols to the watchlist. |
+| Watchlist | `remove_from_watchlist` | **mutate** | `watchlist.delete_watchlist_by_symbol` (per symbol) | Remove one or more symbols from the watchlist. |
+| Portfolio | `get_account_summary` | read | `portfolio.get_account_summary` | Total asset, daily profit, cash balance, holdings count. |
+| Portfolio | `list_holdings` | read | `holdings.get_holdings` | Current holdings with quantity, avg price, current price, profit. |
+
+`add_to_watchlist` / `remove_from_watchlist` accept a list but execute
+per-symbol through the existing `WatchlistService`. `add_watchlist` enforces the
+20-item cap, duplicate rejection, and symbol validation; `delete_watchlist_by_symbol`
+resolves the row by its 6-digit symbol (the assistant only knows symbols, not DB
+ids). Per-symbol failures are collected into `result.skipped` (`added` /
+`removed` for the success list) with their `error_code`; partial success still
 returns `ok: true`.
 
 ### 2.1 Tool definition (Claude Agent SDK, in-process MCP server)
@@ -235,7 +246,16 @@ async def rank_stocks(args: dict) -> dict:
 
 stockquare_server = create_sdk_mcp_server(
     name="stockquare", version="1.0.0",
-    tools=[rank_stocks, search_stocks, get_quote, list_watchlist, add_to_watchlist],
+    tools=[
+        # lookup
+        rank_stocks, search_stocks, get_quote,
+        # chart
+        get_chart,
+        # watchlist
+        list_watchlist, add_to_watchlist, remove_from_watchlist,
+        # portfolio
+        get_account_summary, list_holdings,
+    ],
 )
 ```
 
@@ -302,12 +322,11 @@ iterates the message stream:
 1. Build a request-scoped TurnCollector.
 2. Build ClaudeAgentOptions:
      - mcp_servers   = {"stockquare": stockquare_server}
-     - allowed_tools = ["mcp__stockquare__rank_stocks",
-                        "mcp__stockquare__search_stocks",
-                        "mcp__stockquare__get_quote",
-                        "mcp__stockquare__list_watchlist"]   # read tools only
-       (add_to_watchlist is intentionally NOT pre-approved — it falls through
-        to can_use_tool)
+     - allowed_tools = the READ tools only, namespaced mcp__stockquare__*:
+                        rank_stocks, search_stocks, get_quote, get_chart,
+                        list_watchlist, get_account_summary, list_holdings
+       (the mutate tools add_to_watchlist / remove_from_watchlist are
+        intentionally NOT pre-approved — they fall through to can_use_tool)
      - tools          = []          # remove ALL built-in tools from context
      - permission_mode = "default"  # unmatched tools → can_use_tool
      - can_use_tool   = mutate_gate (§4.1)
@@ -336,25 +355,26 @@ iterates the message stream:
 
 ### 4.1 Mutation gate — `can_use_tool` callback
 
-When the model calls `mcp__stockquare__add_to_watchlist`, it is **not** in
-`allowed_tools`, so (in `permission_mode="default"`) the SDK routes the call to
-the `can_use_tool` callback. The callback **denies** execution and records a
-`PendingAction` instead:
+When the model calls a mutate tool (`mcp__stockquare__add_to_watchlist` or
+`mcp__stockquare__remove_from_watchlist`), it is **not** in `allowed_tools`, so
+(in `permission_mode="default"`) the SDK routes the call to the `can_use_tool`
+callback. The callback **denies** execution and records a `PendingAction`
+instead:
 
 ```python
 async def mutate_gate(tool_name, input, context):
     if tool_name == "mcp__stockquare__add_to_watchlist":
         args = AddToWatchlistArgs(**input)        # re-validate
-        collector.add_pending_action(
-            tool="add_to_watchlist",
-            summary=_summ(args),
-            input=args.model_dump(),
-        )
-        # Deny so the tool does NOT run; tell the model to stop and ask the user.
-        return PermissionResultDeny(
-            message="Awaiting explicit user confirmation; do not retry. "
-                    "Ask the user to confirm in Korean.",
-        )
+        collector.add_pending_action(tool="add_to_watchlist", summary=_summ(args),
+                                     input=args.model_dump())
+        return PermissionResultDeny(message="Awaiting explicit user confirmation; "
+                                            "do not retry. Ask the user to confirm in Korean.")
+    if tool_name == "mcp__stockquare__remove_from_watchlist":
+        args = RemoveFromWatchlistArgs(**input)   # re-validate
+        collector.add_pending_action(tool="remove_from_watchlist", summary=_summ(args),
+                                     input=args.model_dump())
+        return PermissionResultDeny(message="Awaiting explicit user confirmation; "
+                                            "do not retry. Ask the user to confirm in Korean.")
     # Any other unexpected tool is denied outright.
     return PermissionResultDeny(message="Tool not permitted.")
 ```
@@ -362,8 +382,9 @@ async def mutate_gate(tool_name, input, context):
 The model receives the denial as a tool_result, stops retrying, and produces a
 Korean confirmation prompt as its final `reply`. The `pending_action` is
 returned to the client, which renders a confirm gate. **Execution happens only
-on `/confirm`, which bypasses the model entirely** and calls
-`WatchlistService.add_watchlist` directly after re-validating the echoed input.
+on `/confirm`, which bypasses the model entirely** and calls the matching
+`WatchlistService` method (`add_watchlist` / `delete_watchlist_by_symbol`)
+directly after re-validating the echoed input.
 
 > Exact callback signature and the `PermissionResultAllow` / `PermissionResultDeny`
 > types must be confirmed against the SDK reference
@@ -374,9 +395,11 @@ on `/confirm`, which bypasses the model entirely** and calls
 
 Static, instructs the model to: answer in Korean; use the Stockquare tools and
 nothing else; cite symbols by code+name; keep replies concise; never claim a
-mutation succeeded. **Critically, it must tell the model to actually *call* the
-mutate tool** (`add_to_watchlist`) when the user requests it — not to ask for
-confirmation in prose. The confirmation gate is the `can_use_tool` deny (§4.1);
+mutation succeeded. It enumerates the four tool domains (lookup / chart /
+watchlist / portfolio) so the model knows its capabilities. **Critically, it
+must tell the model to actually *call* the mutate tool** (`add_to_watchlist` /
+`remove_from_watchlist`) when the user requests it — not to ask for confirmation
+in prose. The confirmation gate is the `can_use_tool` deny (§4.1);
 if the model only asks in text without calling the tool, no `pending_action` is
 produced and the client renders no confirm gate. Defined once and reused every
 turn.
@@ -435,8 +458,9 @@ the model shell/filesystem access. They are removed:
 - `tools=[]` → all built-ins dropped from the model's context.
 - `setting_sources=[]` → do **not** load the user's `~/.claude` settings,
   `CLAUDE.md`, skills, or project rules into this agent.
-- `allowed_tools` lists only the four **read** MCP tools; `add_to_watchlist`
-  is gated by `can_use_tool`; everything else falls through to a deny.
+- `allowed_tools` lists only the **read** MCP tools; the mutate tools
+  (`add_to_watchlist` / `remove_from_watchlist`) are gated by `can_use_tool`;
+  everything else falls through to a deny.
 - `permission_mode="default"` (never `bypassPermissions` / `acceptEdits`).
 
 ### Settings (`app/config.py`)
@@ -506,20 +530,23 @@ SDK runner; the tool handlers call the **existing services** (`stocks`,
 - Test tool handlers directly: schema re-validation, `is_error` on bad input,
   collector population, and that KIS failures become `is_error` rather than
   raising.
-- Test the `can_use_tool` gate: `add_to_watchlist` is denied and a
-  `PendingAction` is recorded; `/confirm` executes the service without the model.
+- Test the `can_use_tool` gate: each mutate tool (`add_to_watchlist`,
+  `remove_from_watchlist`) is denied and a `PendingAction` is recorded;
+  `/confirm` executes the service without the model.
 - Test the lockdown config: `tools=[]`, `setting_sources=[]`, read-only
   `allowed_tools`, `permission_mode="default"`.
 
 ## 9. Phasing & Extensions
 
-- **Phase 1** — Non-streaming `chat` + `confirm` via the Claude Agent SDK over
-  local Claude Code; 5 read/mutate tools; KIS ranking added to `stocks`;
-  `can_use_tool` confirmation gate on mutations; built-in tools locked down; no
-  order tool; no persistence; single-prompt replay (§4.3a).
-- **Phase 2** — SSE streaming (`text/event-stream`) so tokens render live;
-  SDK **session resume** (§4.3b) for lower latency; conversation persistence +
-  audit log of executed actions.
+- **Phase 1** — `chat` + `confirm` via the Claude Agent SDK over local Claude
+  Code; tools across four domains (lookup / chart / watchlist / portfolio) —
+  7 read + 2 mutate; KIS ranking added to `stocks`; `can_use_tool` confirmation
+  gate on mutations; built-in tools locked down; no order tool; no persistence;
+  single-prompt replay (§4.3a). SSE streaming (`/chat/stream`,
+  `text/event-stream`) so tokens render live ships alongside the non-streaming
+  `/chat` fallback.
+- **Phase 2** — SDK **session resume** (§4.3b) for lower latency; conversation
+  persistence + audit log of executed actions.
 - **Phase 3** — Register `strategy` tools (create/evaluate a strategy from NL)
   and, behind the existing trading safety gates + an extra confirmation, an
   order-placement tool. Real-money actions inherit `TRADING.md` / `STRATEGY.md`
