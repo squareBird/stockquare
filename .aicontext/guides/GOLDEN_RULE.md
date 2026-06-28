@@ -2,6 +2,23 @@
 
 The supreme rules of this project. Every task must comply with these rules. Read this document before starting any work.
 
+## Quick Checklist
+
+This is the canonical short form of the rules below. It is injected into every
+prompt by `.claude/hooks/inject-golden-rule.sh`, which extracts the block between
+the markers — keep it in sync by editing it here, never in the hook.
+
+<!-- BEGIN GOLDEN-RULE-CHECKLIST -->
+- Spec first: check `.aicontext/spec/` before coding; no spec → write one and get approval.
+- Follow `.aicontext/patterns/` (backend: Ruff/Google style; frontend: TS strict, COMPONENT/STATE_MANAGEMENT).
+- Tests required for `services/` and `api/` logic; KIS calls mocked. Tests must pass before done.
+- Lint clean before committing (Ruff backend, ESLint frontend). No `Any`/`any` without justification.
+- One logical change per commit; don't mix backend + frontend in one commit.
+- Update the spec when implementation changes the contract.
+- Subagent boundaries: backend edits `backend/` only, frontend edits `frontend/` only, devops owns infra.
+- Language: all code, comments, docs, and commits in English; respond to the user in Korean.
+<!-- END GOLDEN-RULE-CHECKLIST -->
+
 ## 1. Spec First
 
 - Check the relevant spec in `.aicontext/spec/` before writing any code.
@@ -11,9 +28,11 @@ The supreme rules of this project. Every task must comply with these rules. Read
 ## 2. Follow Patterns
 
 - All code must follow the patterns defined in `.aicontext/patterns/`.
-- `CODE_STYLE.md` — naming, formatting, linting rules.
-- `API_INTEGRATION.md`, `ERROR_HANDLING.md`, `REALTIME_DATA.md` — backend implementation patterns.
-- `STATE_MANAGEMENT.md`, `COMPONENT.md`, `REALTIME_DATA.md` — frontend implementation patterns.
+- Patterns are split by side: `patterns/backend/` and `patterns/frontend/`.
+- Backend (`patterns/backend/`): `CODE_STYLE.md` (naming, formatting, linting),
+  `API_INTEGRATION.md`, `ERROR_HANDLING.md`, `REALTIME_DATA.md`.
+- Frontend (`patterns/frontend/`): `CODE_STYLE.md`, `COMPONENT.md`,
+  `STATE_MANAGEMENT.md`, `REALTIME_DATA.md`.
 - When in doubt, check the pattern document first.
 
 ## 3. Pattern Validation
@@ -97,3 +116,18 @@ Each decision is an entry within the topic file:
 - When implementation changes a spec, update the spec.
 - When a new pattern emerges, add it to the patterns directory.
 - Stale documentation is worse than no documentation.
+
+## 8. Subagent Boundaries
+
+- Backend work (`backend/`) goes through the `backend` agent; it edits `backend/` only.
+- Frontend work (`frontend/`) goes through the `frontend` agent; it edits `frontend/` only.
+- Infra and shared resources (docker-compose, Dockerfiles, CI, env templates,
+  deployment guide) go through the `devops` agent.
+- The wire contract (request/response JSON shapes) is owned by the backend and
+  consumed by the frontend via the adapter layer — change it deliberately and
+  update both sides plus the spec.
+
+## 9. Language
+
+- All code, comments, documentation, and commit messages are written in English.
+- Respond to the user in Korean.
