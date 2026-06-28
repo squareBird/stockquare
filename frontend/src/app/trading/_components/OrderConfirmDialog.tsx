@@ -30,10 +30,15 @@ export default function OrderConfirmDialog({
   const [step, setStep] = useState<1 | 2>(1);
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    // Reset to step 1 every time the dialog reopens for a new request.
-    if (request) setStep(1);
-  }, [request]);
+  // Reset to step 1 every time the dialog reopens for a new request. `request`
+  // is a fresh object per open, so comparing identity during render lets us
+  // reset without a sync effect.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [confirmedRequest, setConfirmedRequest] = useState<OrderRequest | null>(request);
+  if (request !== confirmedRequest) {
+    setConfirmedRequest(request);
+    setStep(1);
+  }
 
   useEffect(() => {
     if (!request) return undefined;

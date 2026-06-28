@@ -96,14 +96,19 @@ export default function StrategyForm({ editId, onClose }: StrategyFormProps) {
   const [amountKrw, setAmountKrw] = useState(50_000);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
-  // Pre-fill when edit target loads
-  useEffect(() => {
-    if (!editTarget) return;
+  // Pre-fill the form once the edit target loads. The target arrives
+  // asynchronously (from the strategies query), so a remount key can't seed
+  // the fields; instead we adjust state during render the first time we see a
+  // given target, tracking which one we've already applied.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prefilledId, setPrefilledId] = useState<number | null>(null);
+  if (editTarget && editTarget.id !== prefilledId) {
+    setPrefilledId(editTarget.id);
     setName(editTarget.name);
     setSelectedSymbol({ symbol: editTarget.symbol, name: editTarget.nameKr });
     setSymbolQuery(editTarget.symbol);
     if (editTarget.rule?.indicators) {
-      setIndicators(editTarget.rule.indicators.map((ind) => ({ ...ind } as IndicatorRow)));
+      setIndicators(editTarget.rule.indicators.map((ind) => ({ ...ind }) as IndicatorRow));
     }
     if (editTarget.sizing.mode === 'fixed_quantity') {
       setSizingMode('fixed_quantity');
@@ -112,7 +117,7 @@ export default function StrategyForm({ editId, onClose }: StrategyFormProps) {
       setSizingMode('fixed_amount');
       setAmountKrw(editTarget.sizing.amountKrw);
     }
-  }, [editTarget]);
+  }
 
   // Symbol search
   const symbolSearchEnabled = debouncedQuery.trim().length > 0 && !selectedSymbol;
@@ -329,7 +334,7 @@ export default function StrategyForm({ editId, onClose }: StrategyFormProps) {
           <div className="space-y-3">
             {indicators.map((row, idx) => (
               // Indicator index is stable within the form lifecycle; idx is safe here
-              // eslint-disable-next-line react/no-array-index-key
+               
               <div key={idx} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <select

@@ -179,11 +179,12 @@ export default function Watchlist() {
         </>
       ) : null}
 
-      <AddStockModal
-        isOpen={isAddModalOpen}
-        onClose={() => setAddModalOpen(false)}
-        onAdd={(symbol) => addMutation.mutate(symbol)}
-      />
+      {isAddModalOpen ? (
+        <AddStockModal
+          onClose={() => setAddModalOpen(false)}
+          onAdd={(symbol) => addMutation.mutate(symbol)}
+        />
+      ) : null}
     </article>
   );
 }

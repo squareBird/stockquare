@@ -41,7 +41,6 @@ function IndicatorSummary({ indicators }: { indicators: Indicator[] }) {
         }
         return (
           // Indicator list index is stable display-only; using idx as key is safe
-          // eslint-disable-next-line react/no-array-index-key
           <li key={idx} className="flex items-center gap-2 text-sm text-gray-700">
             <span className="text-gray-400">•</span>
             {description}
