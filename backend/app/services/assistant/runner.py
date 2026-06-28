@@ -16,13 +16,14 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    StreamEvent,
     TextBlock,
     query,
 )
 
 from app.core.config import Settings
 from app.core.exceptions import AssistantAPIError
-from app.services.assistant_tools import MCP_SERVER_NAME, ToolContext
+from app.services.assistant.tools import MCP_SERVER_NAME, ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,18 @@ def claude_code_available(settings: Settings) -> bool:
     return shutil.which("claude") is not None
 
 
-def build_options(settings: Settings, ctx: ToolContext, system_prompt: str) -> ClaudeAgentOptions:
-    """Build the locked-down SDK options for one chat turn (§5.2)."""
+def build_options(
+    settings: Settings,
+    ctx: ToolContext,
+    system_prompt: str,
+    *,
+    stream_partial: bool = False,
+) -> ClaudeAgentOptions:
+    """Build the locked-down SDK options for one chat turn (§5.2).
+
+    `stream_partial=True` turns on `include_partial_messages` so the query loop
+    emits :class:`StreamEvent` deltas for token-by-token SSE streaming.
+    """
     return ClaudeAgentOptions(
         mcp_servers={MCP_SERVER_NAME: ctx.server},
         allowed_tools=ctx.allowed_tool_names,
@@ -53,6 +64,7 @@ def build_options(settings: Settings, ctx: ToolContext, system_prompt: str) -> C
         max_budget_usd=settings.assistant_max_budget_usd,
         model=settings.assistant_model,
         cli_path=settings.assistant_cli_path,
+        include_partial_messages=stream_partial,
     )
 
 
@@ -98,6 +110,57 @@ async def run_agent(prompt: str, options: ClaudeAgentOptions) -> str:
         raise AssistantAPIError(str(exc)) from exc
 
     return (final_result or "\n".join(reply_parts)).strip()
+
+
+def _text_delta(event: dict) -> str | None:
+    """Pull the text fragment from a raw Anthropic `content_block_delta` event.
+
+    StreamEvent.event mirrors the Anthropic streaming API: a text token arrives
+    as ``{"type": "content_block_delta", "delta": {"type": "text_delta",
+    "text": "..."}}``. Returns None for any other event (tool deltas, message
+    start/stop, thinking deltas) so the caller streams prose only.
+    """
+    if event.get("type") != "content_block_delta":
+        return None
+    delta = event.get("delta")
+    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+        return None
+    text = delta.get("text")
+    return text if isinstance(text, str) and text else None
+
+
+async def run_agent_stream(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[dict]:
+    """Run one agent turn, yielding text deltas as they arrive (§ streaming).
+
+    Requires `options.include_partial_messages=True`. Yields:
+      - ``{"type": "delta", "text": <fragment>}`` per streamed text token.
+      - ``{"type": "result", "text": <final reply>}`` once, at the end.
+
+    The final reply prefers the ResultMessage's `result`; otherwise it is the
+    concatenation of the streamed fragments. Any SDK / CLI failure is normalized
+    to AssistantAPIError so the endpoint can surface a clean error event.
+    """
+    streamed_parts: list[str] = []
+    final_result: str | None = None
+    try:
+        async for message in query(prompt=_single_user_prompt(prompt), options=options):
+            if isinstance(message, StreamEvent):
+                fragment = _text_delta(message.event)
+                if fragment is not None:
+                    streamed_parts.append(fragment)
+                    yield {"type": "delta", "text": fragment}
+            elif isinstance(message, ResultMessage):
+                if message.is_error and not streamed_parts and message.result is None:
+                    raise AssistantAPIError(f"Assistant run failed: {message.subtype}")
+                if message.result:
+                    final_result = message.result
+    except AssistantAPIError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — normalize all SDK/CLI errors
+        logger.warning("assistant SDK stream failed", extra={"exc_type": type(exc).__name__})
+        raise AssistantAPIError(str(exc)) from exc
+
+    yield {"type": "result", "text": (final_result or "".join(streamed_parts)).strip()}
 
 
 # Expose the message stream iterator type alias for callers/tests.

@@ -59,11 +59,25 @@ class Recommendation(BaseModel):
     reason: str
 
 
+class ViewAction(BaseModel):
+    """A client-side navigation/UI directive the assistant emitted.
+
+    Unlike a `PendingAction` (a server-side mutation awaiting confirmation), a
+    ViewAction changes only what the client *shows* — e.g. open a symbol's chart
+    in the Trading tab. The client acts on it immediately; nothing is sent back
+    to the server. `type` selects the behavior; `params` carries its arguments.
+    """
+
+    type: str  # e.g. "open_chart"
+    params: dict = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     reply: str
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     pending_actions: list[PendingAction] = Field(default_factory=list)
     recommendations: list[Recommendation] = Field(default_factory=list)
+    view_actions: list[ViewAction] = Field(default_factory=list)
 
 
 class ConfirmRequest(BaseModel):

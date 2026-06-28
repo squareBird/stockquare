@@ -17,9 +17,9 @@ from app.core.exceptions import AssistantAPIError
 from app.kis.master import StockMasterRow
 from app.kis.models import RankingResponse, RankingRow, StockPriceOutput, StockPriceResponse
 from app.models.stocks import StockMarket
-from app.services import agent_runner
-from app.services import assistant as assistant_module
-from app.services.assistant_tools import (
+from app.services.assistant import runner as agent_runner
+from app.services.assistant import service as assistant_module
+from app.services.assistant.tools import (
     ADD_TO_WATCHLIST,
     RANK_STOCKS,
     ToolContext,
@@ -186,3 +186,121 @@ async def test_chat_503_when_claude_code_unavailable(app_client: AsyncClient, mo
 async def test_chat_validation_rejects_empty_messages(app_client: AsyncClient) -> None:
     resp = await app_client.post("/api/v1/assistant/chat", json={"messages": []})
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Streaming endpoint (/chat/stream — Server-Sent Events)
+# ---------------------------------------------------------------------------
+
+
+def _parse_sse(body: str) -> list[dict]:
+    """Parse `data: <json>` SSE lines into the list of event dicts."""
+    import json
+
+    events: list[dict] = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            events.append(json.loads(line[len("data: ") :]))
+    return events
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_deltas_then_final(
+    app_client: AsyncClient,
+    fake_kis_client: FakeKISClient,
+    stock_index: StockMasterIndex,
+    captured_ctx: list[ToolContext],
+    monkeypatch,
+) -> None:
+    _seed_index(stock_index, ("005930", "삼성전자"))
+    fake_kis_client.ranking_fluctuation.return_value = RankingResponse(
+        rt_cd="0",
+        output=[RankingRow(stck_shrn_iscd="005930", stck_prpr="72000", prdy_ctrt="5.1", acml_vol="100")],
+    )
+
+    async def fake_stream(prompt, options):
+        await captured_ctx[-1].handlers[RANK_STOCKS]({"by": "fluctuation", "limit": 5})
+        yield {"type": "delta", "text": "삼성전자"}
+        yield {"type": "delta", "text": "(005930) 추천합니다."}
+        yield {"type": "result", "text": "삼성전자(005930) 추천합니다."}
+
+    monkeypatch.setattr(agent_runner, "run_agent_stream", fake_stream)
+
+    resp = await app_client.post(
+        "/api/v1/assistant/chat/stream",
+        json={"messages": [{"role": "user", "content": "등락률 상위 추천"}]},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(resp.text)
+    deltas = [e["text"] for e in events if e["type"] == "delta"]
+    assert deltas == ["삼성전자", "(005930) 추천합니다."]
+
+    final = next(e for e in events if e["type"] == "final")
+    assert final["reply"] == "삼성전자(005930) 추천합니다."
+    assert final["recommendations"][0]["symbol"] == "005930"
+    assert final["tool_calls"][0]["tool"] == RANK_STOCKS
+    assert final["pending_actions"] == []
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_surfaces_pending_action_in_final(
+    app_client: AsyncClient,
+    fake_kis_client: FakeKISClient,
+    captured_ctx: list[ToolContext],
+    monkeypatch,
+) -> None:
+    async def fake_stream(prompt, options):
+        await captured_ctx[-1].can_use_tool(
+            qualified_name(ADD_TO_WATCHLIST), {"symbols": ["005930"]}, None
+        )
+        yield {"type": "delta", "text": "추가할까요?"}
+        yield {"type": "result", "text": "삼성전자(005930)를 관심종목에 추가할까요?"}
+
+    monkeypatch.setattr(agent_runner, "run_agent_stream", fake_stream)
+
+    resp = await app_client.post(
+        "/api/v1/assistant/chat/stream",
+        json={"messages": [{"role": "user", "content": "삼성전자 관심종목 추가"}]},
+    )
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    final = next(e for e in events if e["type"] == "final")
+    assert len(final["pending_actions"]) == 1
+    assert final["pending_actions"][0]["tool"] == ADD_TO_WATCHLIST
+    assert final["pending_actions"][0]["input"] == {"symbols": ["005930"]}
+    fake_kis_client.inquire_stock_price.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_error_event_on_sdk_failure(
+    app_client: AsyncClient, monkeypatch
+) -> None:
+    async def boom(prompt, options):
+        raise AssistantAPIError("claude code crashed")
+        yield  # pragma: no cover — make this an async generator
+
+    monkeypatch.setattr(agent_runner, "run_agent_stream", boom)
+    resp = await app_client.post(
+        "/api/v1/assistant/chat/stream",
+        json={"messages": [{"role": "user", "content": "안녕"}]},
+    )
+    # The body opened OK; the failure surfaces as an in-stream error event.
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1]["type"] == "error"
+    assert "final" not in {e["type"] for e in events}
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_503_when_claude_code_unavailable(
+    app_client: AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(agent_runner, "claude_code_available", lambda settings: False)
+    resp = await app_client.post(
+        "/api/v1/assistant/chat/stream",
+        json={"messages": [{"role": "user", "content": "안녕"}]},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "ASSISTANT_NOT_CONFIGURED"
