@@ -180,3 +180,44 @@ class StrategyNotFoundError(StockquareError):
 
     def __init__(self, strategy_id: int) -> None:
         super().__init__(f"Strategy not found: {strategy_id}")
+
+
+# ---------------------------------------------------------------------------
+# Assistant — Claude Agent SDK orchestration (ASSISTANT.md)
+# ---------------------------------------------------------------------------
+
+
+class AssistantNotConfiguredError(StockquareError):
+    """Assistant disabled or local Claude Code is unavailable.
+
+    Mirrors KISNotConfiguredError's "not deployable yet" 503: the assistant
+    runs the user's local Claude Code through the Claude Agent SDK, so this is
+    raised when the feature is disabled or the `claude` CLI is missing / not
+    logged in. The rest of the app stays functional.
+    """
+
+    code: ClassVar[str] = "ASSISTANT_NOT_CONFIGURED"
+    http_status: ClassVar[int] = 503
+
+    def __init__(self, message: str = "AI assistant is not available") -> None:
+        super().__init__(message)
+
+
+class AssistantAPIError(StockquareError):
+    """The Claude Agent SDK / local Claude Code failed during a chat turn."""
+
+    code: ClassVar[str] = "ASSISTANT_API_ERROR"
+    http_status: ClassVar[int] = 502
+
+    def __init__(self, message: str = "AI assistant request failed") -> None:
+        super().__init__(message)
+
+
+class InvalidActionError(StockquareError):
+    """A confirm request named a non-mutate or unknown tool."""
+
+    code: ClassVar[str] = "INVALID_ACTION"
+    http_status: ClassVar[int] = 400
+
+    def __init__(self, tool: str) -> None:
+        super().__init__(f"Action cannot be confirmed: {tool}")

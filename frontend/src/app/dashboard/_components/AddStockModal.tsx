@@ -8,7 +8,6 @@ import { searchStocks } from '@/lib/api/stocks';
 import { useStockDetail } from '@/stores/stock-detail';
 
 interface AddStockModalProps {
-  isOpen: boolean;
   onClose: () => void;
   onAdd: (symbol: string) => void;
 }
@@ -22,7 +21,9 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export default function AddStockModal({ isOpen, onClose, onAdd }: AddStockModalProps) {
+// Rendered only while open (the parent unmounts it on close), so internal
+// search state resets naturally on each open without a sync effect.
+export default function AddStockModal({ onClose, onAdd }: AddStockModalProps) {
   const openDetail = useStockDetail((state) => state.open);
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, 300);
@@ -32,25 +33,17 @@ export default function AddStockModal({ isOpen, onClose, onAdd }: AddStockModalP
   const { data, isFetching } = useQuery({
     queryKey: ['stocks', 'search', debouncedQuery],
     queryFn: () => searchStocks(debouncedQuery),
-    enabled: isOpen && enabled,
+    enabled,
   });
-
-  // Reset input whenever the modal is reopened.
-  useEffect(() => {
-    if (!isOpen) setQuery('');
-  }, [isOpen]);
 
   // Dismiss on Escape so keyboard users can always close the modal.
   useEffect(() => {
-    if (!isOpen) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  }, [onClose]);
 
   return (
     <div

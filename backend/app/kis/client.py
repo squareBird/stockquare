@@ -19,6 +19,7 @@ from app.kis.models import (
     DailyChartResponse,
     IndexResponse,
     OrderCashResponse,
+    RankingResponse,
     SearchInfoResponse,
     StockPriceResponse,
 )
@@ -323,6 +324,77 @@ class KISClient:
         if result.rt_cd != "0":
             raise InvalidSymbolError(symbol)
         return result
+
+    # ------------------------------------------------------------------
+    # Rankings — fluctuation / volume (used by recommendation tools)
+    # ------------------------------------------------------------------
+
+    async def ranking_fluctuation(self, *, rising: bool, count: int) -> RankingResponse:
+        """Fetch the KRX 등락률 순위 (price-change ranking).
+
+        `rising=True` ranks top gainers (상승률), `False` ranks top losers
+        (하락률). `count` bounds how many rows to request from KIS.
+
+        The FID parameter set mirrors the koreainvestment/open-trading-api
+        reference for `ranking/fluctuation`; `FID_INPUT_ISCD="0000"` requests
+        the whole market and `FID_RANK_SORT_CLS_CODE` selects the direction.
+        """
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20170",
+            "fid_input_iscd": "0000",
+            "fid_rank_sort_cls_code": "0" if rising else "1",
+            "fid_input_cnt_1": "0",
+            "fid_prc_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_div_cls_code": "0",
+            "fid_rsfl_rate1": "",
+            "fid_rsfl_rate2": "",
+        }
+        result = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/ranking/fluctuation",
+            tr_id="FHPST01700000",
+            response_model=RankingResponse,
+            params=params,
+        )
+        if result.rt_cd != "0":
+            raise KISAPIError("KIS fluctuation ranking failed")
+        return RankingResponse(rt_cd=result.rt_cd, output=result.output[:count])
+
+    async def ranking_volume(self, *, count: int) -> RankingResponse:
+        """Fetch the KRX 거래량 순위 (trading-volume ranking).
+
+        Requests the whole market (`FID_INPUT_ISCD="0000"`) ordered by
+        accumulated volume. `count` bounds how many rows to request.
+        """
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20171",
+            "fid_input_iscd": "0000",
+            "fid_div_cls_code": "0",
+            "fid_blng_cls_code": "0",
+            "fid_trgt_cls_code": "111111111",
+            "fid_trgt_exls_cls_code": "0000000000",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_input_date_1": "",
+        }
+        result = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/volume-rank",
+            tr_id="FHPST01710000",
+            response_model=RankingResponse,
+            params=params,
+        )
+        if result.rt_cd != "0":
+            raise KISAPIError("KIS volume ranking failed")
+        return RankingResponse(rt_cd=result.rt_cd, output=result.output[:count])
 
     # ------------------------------------------------------------------
     # Trading — order placement / cancel / modify / history

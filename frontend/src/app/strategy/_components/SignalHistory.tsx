@@ -62,7 +62,6 @@ export default function SignalHistory({ strategyId }: SignalHistoryProps) {
         <tbody className="divide-y divide-gray-50">
           {data.map((signal, idx) => (
             // Signals have no stable id from the API; use index as key (list is immutable display)
-            // eslint-disable-next-line react/no-array-index-key
             <tr key={idx} className="align-top">
               <td className="py-2 pr-4">
                 <SignalBadge action={signal.action} />

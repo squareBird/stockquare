@@ -6,24 +6,36 @@ Based on Airbnb JavaScript Style Guide. Enforced by ESLint + Prettier.
 
 ## Formatter & Linter
 
-- **ESLint** — `eslint-config-airbnb-typescript` + Next.js built-in rules
+- **ESLint** — `eslint-config-next` (flat config) + project rule overrides
 - **Prettier** — code formatting
 
-```json
-// .eslintrc.json
-{
-  "extends": [
-    "next/core-web-vitals",
-    "next/typescript",
-    "airbnb",
-    "airbnb-typescript",
-    "prettier"
-  ],
-  "parserOptions": {
-    "project": "./tsconfig.json"
-  }
-}
+Next.js 16 removed `next lint`, so we use ESLint 9 flat config
+(`eslint.config.mjs`). The Airbnb shareable configs are eslintrc-format and
+unmaintained for ESLint 9, so they are no longer extended; the custom rules we
+relied on (`import/order`, `@typescript-eslint/no-unused-vars` with `^_` ignore,
+`no-console`) are declared explicitly. The intent below (naming, import order,
+TS strict, no `any`) is unchanged.
+
+```js
+// eslint.config.mjs
+import nextPlugin from 'eslint-config-next';
+import prettierConfig from 'eslint-config-prettier';
+
+export default [
+  { ignores: ['.next/**', 'node_modules/**', 'out/**', 'build/**', 'next-env.d.ts'] },
+  ...nextPlugin, // next + next/typescript (react, react-hooks, import, jsx-a11y, @next/next)
+  {
+    files: ['**/*.{js,jsx,mjs,ts,tsx,mts,cts}'],
+    rules: {
+      /* project overrides: import/order, no-unused-vars, no-console, react/* */
+    },
+  },
+  { rules: prettierConfig.rules }, // Prettier compatibility (must be last)
+];
 ```
+
+Run lint with `pnpm lint` (`eslint .`); lint a single file with
+`./node_modules/.bin/eslint <file>` from `frontend/`.
 
 ```json
 // .prettierrc
