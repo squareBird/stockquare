@@ -5,14 +5,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from app.core.exceptions import InvalidQueryError, InvalidSymbolError, KISAPIError
 from app.kis.client import KISClient
-from app.kis.models import DailyChartCandle, RankingRow
+from app.kis.models import DailyChartCandle, MinuteChartCandle, RankingRow
 from app.models.stocks import (
     Candle,
-    ChartPeriod,
+    ChartInterval,
     RankBy,
     RankDirection,
     RankedStock,
@@ -54,14 +54,27 @@ def _display_name(row: StockMasterRow) -> str:
     return row.symbol
 
 
-# Lookback windows (calendar days) per chart period. KIS returns only trading
-# days inside the window, so calendar-day spans are sufficient.
-_PERIOD_WINDOW_DAYS: dict[ChartPeriod, int] = {
-    ChartPeriod.ONE_WEEK: 7,
-    ChartPeriod.ONE_MONTH: 31,
-    ChartPeriod.THREE_MONTH: 93,
-    ChartPeriod.ONE_YEAR: 366,
+# Visible lookback windows (calendar days) per day-family interval. KIS returns
+# only trading days inside the window, so calendar-day spans are sufficient. The
+# window scales with the candle granularity: enough daily candles for ~6 months,
+# weekly for ~2 years, monthly for ~5 years (per CHARTS.md).
+_INTERVAL_WINDOW_DAYS: dict[ChartInterval, int] = {
+    ChartInterval.DAY: 186,
+    ChartInterval.WEEK: 731,
+    ChartInterval.MONTH: 1827,
 }
+
+# KIS `FID_PERIOD_DIV_CODE` for the day-family intervals (daily endpoint).
+_INTERVAL_PERIOD_CODE: dict[ChartInterval, str] = {
+    ChartInterval.DAY: "D",
+    ChartInterval.WEEK: "W",
+    ChartInterval.MONTH: "M",
+}
+
+# Intraday paging guard: one trading session is ~6.5h = 390 minute candles, and
+# KIS returns ~30 per page. Cap the back-paging so a clock/holiday edge case
+# can't loop unbounded.
+_MINUTE_MAX_PAGES = 16
 
 
 def _format_chart_date(yyyymmdd: str) -> str:
@@ -72,6 +85,49 @@ def _format_chart_date(yyyymmdd: str) -> str:
 def _to_candle(row: DailyChartCandle) -> Candle:
     return Candle(
         time=_format_chart_date(row.date),
+        open=float(row.open or "0"),
+        high=float(row.high or "0"),
+        low=float(row.low or "0"),
+        close=float(row.close or "0"),
+        volume=int(float(row.volume or "0")),
+    )
+
+
+# KST is UTC+9; KIS intraday date/time are KST wall-clock with no offset, so we
+# attach +09:00 explicitly to produce a correct absolute epoch.
+_KST = timezone(timedelta(hours=9))
+
+
+def _minute_epoch(date_yyyymmdd: str, time_hhmmss: str) -> int:
+    """Convert a KIS intraday `YYYYMMDD` + `HHMMSS` (KST) pair to epoch seconds."""
+    dt = datetime(
+        int(date_yyyymmdd[0:4]),
+        int(date_yyyymmdd[4:6]),
+        int(date_yyyymmdd[6:8]),
+        int(time_hhmmss[0:2]),
+        int(time_hhmmss[2:4]),
+        int(time_hhmmss[4:6]),
+        tzinfo=_KST,
+    )
+    return int(dt.timestamp())
+
+
+def _hhmmss_minus_one_second(hhmmss: str) -> str | None:
+    """Return `HHMMSS` one second earlier, or None if it would underflow 00:00:00.
+
+    Used to advance the intraday paging anchor below the oldest candle already
+    fetched so KIS returns strictly older bars on the next page.
+    """
+    h, m, s = int(hhmmss[0:2]), int(hhmmss[2:4]), int(hhmmss[4:6])
+    total = h * 3600 + m * 60 + s - 1
+    if total < 0:
+        return None
+    return f"{total // 3600:02d}{(total % 3600) // 60:02d}{total % 60:02d}"
+
+
+def _to_minute_candle(row: MinuteChartCandle) -> Candle:
+    return Candle(
+        time=_minute_epoch(row.date, row.time),
         open=float(row.open or "0"),
         high=float(row.high or "0"),
         low=float(row.low or "0"),
@@ -207,8 +263,12 @@ class StocksService:
             volume=to_int(row.volume),
         )
 
-    def _resolve_name(self, symbol: str, fallback: str = "") -> str:
-        """Resolve a display name from the master index, then fallbacks."""
+    def resolve_name(self, symbol: str, fallback: str = "") -> str:
+        """Resolve a display name from the master index, then fallbacks.
+
+        Public so callers that only have a symbol (e.g. the assistant chart
+        tool) can label it without an extra KIS round-trip.
+        """
         index_row = self._index.by_symbol(symbol)
         if index_row is not None:
             name = index_row.name_ko or index_row.name_en
@@ -216,25 +276,80 @@ class StocksService:
                 return name
         return fallback or symbol
 
-    async def get_history(self, symbol: str, period: ChartPeriod) -> list[Candle]:
-        """Return the daily OHLCV candle series for a 6-digit KR symbol.
+    # Backwards-compatible private alias (internal callers).
+    _resolve_name = resolve_name
 
-        Candles are ordered oldest -> newest. An unknown symbol raises
-        InvalidSymbolError (400); an empty window returns an empty list.
+    async def get_history(
+        self, symbol: str, interval: ChartInterval = ChartInterval.DAY
+    ) -> list[Candle]:
+        """Return the OHLCV candle series for a 6-digit KR symbol.
+
+        The candle granularity is selected by ``interval``: ``MINUTE`` returns
+        the current session's 1-minute candles (epoch-second ``time``); the
+        day-family intervals (``DAY``/``WEEK``/``MONTH``) return date-stamped
+        candles over an interval-scaled lookback window. Candles are ordered
+        oldest -> newest. An unknown symbol raises InvalidSymbolError (400); an
+        empty window returns an empty list.
         """
         symbol = symbol.strip()
         if not SYMBOL_PATTERN.match(symbol):
             raise InvalidSymbolError(symbol)
 
+        if interval == ChartInterval.MINUTE:
+            return await self._get_minute_history(symbol)
+        return await self._get_daily_family_history(symbol, interval)
+
+    async def _get_daily_family_history(
+        self, symbol: str, interval: ChartInterval
+    ) -> list[Candle]:
+        """Daily/weekly/monthly candles via inquire-daily-itemchartprice."""
         now_kst = datetime.now(UTC) + timedelta(hours=9)
         to_date = now_kst.strftime("%Y%m%d")
-        from_date = (now_kst - timedelta(days=_PERIOD_WINDOW_DAYS[period])).strftime("%Y%m%d")
+        from_date = (
+            now_kst - timedelta(days=_INTERVAL_WINDOW_DAYS[interval])
+        ).strftime("%Y%m%d")
 
         resp = await self._kis.inquire_daily_itemchartprice(
             symbol=symbol,
             from_date=from_date,
             to_date=to_date,
+            period_code=_INTERVAL_PERIOD_CODE[interval],
         )
         # KIS returns rows newest-first and pads short windows with blank-date
         # entries; reverse to oldest-first and drop the padding rows.
         return [_to_candle(row) for row in reversed(resp.output2) if row.date]
+
+    async def _get_minute_history(self, symbol: str) -> list[Candle]:
+        """Intraday 1-minute candles for the current session.
+
+        KIS returns ~30 candles per page ending at an `HHMMSS` anchor; we page
+        backwards from the current time until a page is empty or repeats, then
+        sort the merged set oldest-first. Duplicate timestamps across page
+        boundaries are de-duplicated.
+        """
+        now_kst = datetime.now(UTC) + timedelta(hours=9)
+        anchor = now_kst.strftime("%H%M%S")
+
+        by_epoch: dict[int, Candle] = {}
+        for _ in range(_MINUTE_MAX_PAGES):
+            resp = await self._kis.inquire_time_itemchartprice(symbol=symbol, to_time=anchor)
+            rows = [row for row in resp.output2 if row.date and row.time]
+            if not rows:
+                break
+            # rows are newest-first; the last is the oldest in this page.
+            before = len(by_epoch)
+            for row in rows:
+                candle = _to_minute_candle(row)
+                by_epoch[int(candle.time)] = candle
+            # No new candles → we've reached the start of the session.
+            if len(by_epoch) == before:
+                break
+            oldest_time = rows[-1].time
+            # Step one second below the oldest candle so the next page does not
+            # re-fetch it as its newest row.
+            next_anchor = _hhmmss_minus_one_second(oldest_time)
+            if next_anchor is None:
+                break
+            anchor = next_anchor
+
+        return [by_epoch[key] for key in sorted(by_epoch)]

@@ -18,6 +18,7 @@ from app.kis.models import (
     DailyCcldResponse,
     DailyChartResponse,
     IndexResponse,
+    MinuteChartResponse,
     OrderCashResponse,
     RankingResponse,
     SearchInfoResponse,
@@ -319,6 +320,38 @@ class KISClient:
             "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
             tr_id="FHKST03010100",
             response_model=DailyChartResponse,
+            params=params,
+        )
+        if result.rt_cd != "0":
+            raise InvalidSymbolError(symbol)
+        return result
+
+    async def inquire_time_itemchartprice(
+        self,
+        *,
+        symbol: str,
+        to_time: str,
+    ) -> MinuteChartResponse:
+        """Fetch one page of intraday 1-minute OHLCV candles for a stock.
+
+        `to_time` is an `HHMMSS` anchor; KIS returns up to ~30 minute candles
+        ending at that time, newest-first in `output2`. To assemble a full
+        session the caller pages backwards using the oldest returned candle's
+        time as the next anchor. `FID_PW_DATA_INCU_YN="Y"` includes the
+        pre-market data so the first bars of the session are not dropped.
+        """
+        params = {
+            "FID_ETC_CLS_CODE": "",
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_INPUT_HOUR_1": to_time,
+            "FID_PW_DATA_INCU_YN": "Y",
+        }
+        result = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            tr_id="FHKST03010200",
+            response_model=MinuteChartResponse,
             params=params,
         )
         if result.rt_cd != "0":

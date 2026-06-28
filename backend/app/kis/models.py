@@ -246,6 +246,38 @@ class DailyChartResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Quotations — inquire-time-itemchartprice (intraday minute OHLCV series)
+# ---------------------------------------------------------------------------
+
+
+class MinuteChartCandle(BaseModel):
+    """Single minute candle from inquire-time-itemchartprice output2.
+
+    `time` is the candle's start time as `HHMMSS`; `date` is the business date
+    `YYYYMMDD`. Together they pin the candle to an absolute instant (KST).
+    """
+
+    date: str = Field(alias="stck_bsop_date", default="")
+    time: str = Field(alias="stck_cntg_hour", default="")
+    open: str = Field(alias="stck_oprc", default="0")
+    high: str = Field(alias="stck_hgpr", default="0")
+    low: str = Field(alias="stck_lwpr", default="0")
+    close: str = Field(alias="stck_prpr", default="0")
+    volume: str = Field(alias="cntg_vol", default="0")
+
+    model_config = {"populate_by_name": True}
+
+
+class MinuteChartResponse(BaseModel):
+    """Envelope for inquire-time-itemchartprice."""
+
+    rt_cd: str
+    msg_cd: str | None = None
+    msg1: str | None = None
+    output2: list[MinuteChartCandle] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Rankings — fluctuation (등락률 순위) / volume (거래량 순위)
 # ---------------------------------------------------------------------------
 
