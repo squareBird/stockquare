@@ -170,6 +170,18 @@ class WatchlistService:
             raise WatchlistNotFoundError(item_id)
         await self._session.delete(entry)
 
+    async def delete_watchlist_by_symbol(self, symbol: str) -> None:
+        """Remove a watchlist entry by its 6-digit symbol.
+
+        The assistant only knows symbols (not DB ids), so the AI-driven remove
+        path resolves the row by symbol. Raises WatchlistNotFoundError when no
+        entry holds that symbol.
+        """
+        entry = await self._session.scalar(select(Watchlist).where(Watchlist.symbol == symbol))
+        if entry is None:
+            raise WatchlistNotFoundError(symbol)
+        await self._session.delete(entry)
+
     async def reorder_watchlist(self, order: list[WatchlistOrderItem]) -> int:
         if not order:
             return 0
