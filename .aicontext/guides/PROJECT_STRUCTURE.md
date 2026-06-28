@@ -41,11 +41,24 @@ backend/
 │   │   ├── order.py        # Order domain models
 │   │   ├── stock.py        # Stock domain models
 │   │   └── portfolio.py    # Portfolio domain models
-│   ├── services/
+│   ├── services/           # Business logic, one package per domain
 │   │   ├── __init__.py
-│   │   ├── trading.py      # Trading business logic
-│   │   ├── portfolio.py    # Portfolio business logic
-│   │   └── strategy.py     # Auto-trading strategy engine
+│   │   ├── _helpers.py     # Shared parsing helpers (to_int / to_float)
+│   │   ├── trading/        # Each domain is a package:
+│   │   │   ├── __init__.py #   __init__ re-exports the public surface so
+│   │   │   └── service.py  #   `from app.services.trading import TradingService`
+│   │   ├── portfolio/      #   stays stable regardless of internal file layout.
+│   │   │   ├── __init__.py
+│   │   │   └── service.py
+│   │   ├── strategy/       # A domain may hold more than one module:
+│   │   │   ├── __init__.py
+│   │   │   ├── service.py      # StrategyService
+│   │   │   └── indicators.py   # rule evaluation (strategy-only)
+│   │   └── assistant/      # AI assistant over local Claude Code (Agent SDK)
+│   │       ├── __init__.py
+│   │       ├── service.py  # AssistantService (chat / chat_stream / confirm)
+│   │       ├── tools.py    # in-process MCP tool registry + mutate gate
+│   │       └── runner.py   # Claude Agent SDK boundary
 │   ├── db/
 │   │   ├── __init__.py
 │   │   ├── session.py      # Database session
@@ -69,7 +82,7 @@ backend/
 | Layer | Role | Depends On |
 |-------|------|-----------|
 | `api/` | HTTP endpoints, request/response | `services/`, `models/` |
-| `services/` | Business logic | `kis/`, `db/`, `models/` |
+| `services/` | Business logic — one package per domain | `kis/`, `db/`, `models/` |
 | `kis/` | KIS API integration | External API |
 | `models/` | Domain models (Pydantic) | — |
 | `db/` | Database access | PostgreSQL |
@@ -84,6 +97,17 @@ api → services → kis / db
 ```
 
 `kis/` and `db/` must not depend on each other. `api/` must not call `kis/` directly.
+
+### Service package convention
+
+Each domain under `services/` is a package, not a single module. The single
+entry module is named `service.py`; a domain may add sibling modules when it
+grows (e.g. `strategy/indicators.py`, `assistant/tools.py`, `assistant/runner.py`).
+The package `__init__.py` re-exports the public surface, so importers use the
+stable `from app.services.<domain> import <Symbol>` path regardless of how the
+domain is split internally. Add a new domain by creating `services/<domain>/`
+with `service.py` + `__init__.py`; grow an existing one by adding modules inside
+its package. Cross-domain code imports the package, never a sibling's `service.py`.
 
 ## Frontend
 
