@@ -31,11 +31,20 @@ export interface Recommendation {
   reason: string;
 }
 
+// A client-side UI directive emitted by the assistant (e.g. open a symbol's
+// chart in the Trading tab). Unlike a PendingAction, the client acts on it
+// immediately and nothing is sent back to the server.
+export interface ViewAction {
+  type: string; // e.g. "open_chart"
+  params: Record<string, unknown>;
+}
+
 export interface ChatResponse {
   reply: string;
   toolCalls: ToolCallResult[];
   pendingActions: PendingAction[];
   recommendations: Recommendation[];
+  viewActions: ViewAction[];
 }
 
 export interface ConfirmResponse {

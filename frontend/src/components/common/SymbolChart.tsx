@@ -7,10 +7,10 @@ import dynamic from 'next/dynamic';
 import { useQuery } from '@tanstack/react-query';
 
 import ChangeDisplay from '@/components/common/ChangeDisplay';
-import PeriodToggle from '@/components/common/PeriodToggle';
+import IntervalToggle from '@/components/common/IntervalToggle';
 import PriceDisplay from '@/components/common/PriceDisplay';
 import { fetchStockHistory } from '@/lib/api/charts';
-import type { ChartPeriod } from '@/types/charts';
+import type { ChartInterval } from '@/types/charts';
 
 // lightweight-charts touches `window`/`document` on import, so the chart is
 // loaded client-side only.
@@ -19,6 +19,9 @@ const PriceChart = dynamic(() => import('@/components/common/PriceChart'), { ssr
 interface SymbolChartProps {
   symbol: string;
   name?: string | null;
+  // Initial candle granularity (e.g. when the assistant requests a specific
+  // one). Defaults to day. Only seeds the initial state; the user can toggle.
+  initialInterval?: ChartInterval;
   // Optional element rendered at the top-right of the header (e.g. the modal's
   // Close button). The inline trading panel leaves it empty.
   headerRight?: ReactNode;
@@ -29,13 +32,18 @@ interface SymbolChartProps {
 // Phase 1 charting is KR-only (domestic KIS daily candles, KRW); overseas
 // symbols degrade to a "not yet supported" message instead of firing a failing
 // history request.
-export default function SymbolChart({ symbol, name, headerRight }: SymbolChartProps) {
-  const [period, setPeriod] = useState<ChartPeriod>('1m');
+export default function SymbolChart({
+  symbol,
+  name,
+  initialInterval = 'day',
+  headerRight,
+}: SymbolChartProps) {
+  const [interval, setInterval] = useState<ChartInterval>(initialInterval);
   const isKrSymbol = /^\d{6}$/.test(symbol);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['stocks', symbol, 'history', period],
-    queryFn: () => fetchStockHistory(symbol, period),
+    queryKey: ['stocks', symbol, 'history', interval],
+    queryFn: () => fetchStockHistory(symbol, interval),
     enabled: isKrSymbol,
   });
 
@@ -97,7 +105,7 @@ export default function SymbolChart({ symbol, name, headerRight }: SymbolChartPr
       </header>
 
       <div className="mb-3 flex justify-end">
-        <PeriodToggle value={period} onChange={setPeriod} />
+        <IntervalToggle value={interval} onChange={setInterval} />
       </div>
 
       {chartArea}

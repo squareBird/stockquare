@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from 'react';
 
+import { useSearchParams } from 'next/navigation';
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import SymbolChart from '@/components/common/SymbolChart';
 import { fetchAccountStatus } from '@/lib/api/auth';
 import { placeOrder } from '@/lib/api/orders';
+import type { ChartInterval } from '@/types/charts';
 import type { StockSearchResult } from '@/types/dashboard';
 import type { OrderRequest } from '@/types/orders';
 
@@ -26,23 +29,45 @@ interface Toast {
 const TOAST_SUCCESS_MS = 5_000;
 const TOAST_ERROR_MS = 10_000;
 
+const CHART_INTERVALS: readonly string[] = ['min', 'day', 'week', 'month'];
+
+function parseInterval(value: string | null): ChartInterval | undefined {
+  return value && CHART_INTERVALS.includes(value) ? (value as ChartInterval) : undefined;
+}
+
 // Glue component that holds the shared trading state (selected symbol,
 // pending confirmation, submit mutation) and wires the sub-components
 // together. Also owns the shared toast region so place-order and cancel
 // results feed into the same status surface.
 export default function TradingWorkspace() {
   const queryClient = useQueryClient();
+  const searchParams = useSearchParams();
   const [selectedSymbol, setSelectedSymbol] = useState<StockSearchResult | null>(null);
   // Pre-fill the symbol search when arriving from the chart modal's 주문하기
-  // action (`/trading?symbol=...`). Read once on mount to avoid pulling in a
-  // useSearchParams Suspense boundary for a transient nav param.
-  const [initialSymbol] = useState(() =>
-    typeof window === 'undefined'
-      ? ''
-      : (new URLSearchParams(window.location.search).get('symbol') ?? ''),
-  );
+  // action (`/trading?symbol=...`). Read once on mount as the initial seed.
+  const [initialSymbol] = useState(() => searchParams.get('symbol') ?? '');
   const [pendingRequest, setPendingRequest] = useState<OrderRequest | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // The AI assistant navigates here with `?symbol=&name=&interval=` to show a
+  // chart in response to a "show me the chart" request. Auto-select that symbol
+  // so the inline chart renders without a manual search. We react when the URL
+  // symbol changes (e.g. a second chart request while already on this tab) by
+  // adjusting state during render against the last-applied value, which avoids
+  // clobbering a manual picker/watchlist selection made under the same URL.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const urlSymbol = searchParams.get('symbol');
+  const urlName = searchParams.get('name');
+  const urlInterval = parseInterval(searchParams.get('interval'));
+  const [appliedUrlSymbol, setAppliedUrlSymbol] = useState<string | null>(null);
+  if (urlSymbol && urlSymbol !== appliedUrlSymbol) {
+    setAppliedUrlSymbol(urlSymbol);
+    setSelectedSymbol((current) =>
+      current?.symbol === urlSymbol
+        ? current
+        : { symbol: urlSymbol, name: urlName ?? urlSymbol, market: '' },
+    );
+  }
 
   const { data: authData } = useQuery({
     queryKey: ['auth', 'status'],
@@ -136,7 +161,12 @@ export default function TradingWorkspace() {
         <div className="flex flex-col gap-6">
           <article className="rounded-xl border border-gray-200 bg-white p-5 shadow-card">
             {selectedSymbol ? (
-              <SymbolChart symbol={selectedSymbol.symbol} name={selectedSymbol.name} />
+              <SymbolChart
+                key={selectedSymbol.symbol}
+                symbol={selectedSymbol.symbol}
+                name={selectedSymbol.name}
+                initialInterval={urlInterval}
+              />
             ) : (
               <div className="flex h-96 items-center justify-center text-sm text-gray-400">
                 종목을 검색하거나 관심종목에서 선택하면 차트가 표시됩니다.

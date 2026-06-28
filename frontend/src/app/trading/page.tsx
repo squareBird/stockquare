@@ -1,3 +1,5 @@
+import { Suspense } from 'react';
+
 import ModeBanner from './_components/ModeBanner';
 import TradingWorkspace from './_components/TradingWorkspace';
 
@@ -9,7 +11,11 @@ export default function TradingPage() {
         <header>
           <h1 className="text-xl font-bold tracking-tight text-gray-900">Trading</h1>
         </header>
-        <TradingWorkspace />
+        {/* TradingWorkspace reads `?symbol=&interval=` via useSearchParams,
+            which requires a Suspense boundary during SSR/prerender. */}
+        <Suspense fallback={null}>
+          <TradingWorkspace />
+        </Suspense>
       </main>
     </>
   );
