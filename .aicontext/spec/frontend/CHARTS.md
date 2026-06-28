@@ -11,7 +11,7 @@ Price charts shown two ways, both built on the same `SymbolChart` core
    results) renders the chart inline in the main column, alongside the order
    entry, so the user can chart and trade without a popup.
 
-Both surfaces share the `SymbolChart` component (header price line + period
+Both surfaces share the `SymbolChart` component (header price line + interval
 toggle + chart, with the KR-only / overseas-degradation rules in §2).
 
 > **Data prerequisite**: this depends on `GET /api/v1/stocks/{symbol}/history`,
@@ -46,7 +46,7 @@ therefore does not open the modal.
 │  삼성전자  005930 · KOSPI            [Close]  │  header
 │  ₩72,000   ▲ +1,200 (+1.69%)                 │  current price (ChangeDisplay)
 ├───────────────────────────────────────────────┤
-│  [1D] [1W] [1M] [3M] [1Y]                     │  period toggle
+│  [분봉] [일봉] [주봉] [월봉]                   │  interval toggle
 ├───────────────────────────────────────────────┤
 │                                                │
 │            candlestick series                  │  PriceChart
@@ -72,7 +72,7 @@ The container. Follows the exact a11y pattern already used by
   button.
 - Closing clears `activeSymbol` in the store.
 
-Sections: header (name + symbol + market + live price), period toggle,
+Sections: header (name + symbol + market + live price), interval toggle,
 `PriceChart`, and a quick-actions row. The header price reuses
 `PriceDisplay` + `ChangeDisplay` from `components/common/` and shares the
 `['stocks', symbol, 'price']` query with the rest of the app.
@@ -109,51 +109,54 @@ Wraps a `lightweight-charts` chart instance.
   modal's quick actions are likewise disabled for overseas symbols. Full
   overseas price/chart support is deferred (see backend `STOCKS.md` Phase 2).
 
-## 3. Period selector
+## 3. Interval selector
 
-A small pill toggle. Each period maps to a backend `period` value and a
-candle granularity:
+A small pill toggle selecting **candle granularity** (not a lookback window).
+Each interval maps to a backend `interval` value; the backend derives the
+visible range and source endpoint (see `STOCKS.md` §2):
 
-| Pill | `period` param | Granularity | Source tr_id (backend) |
-|------|----------------|-------------|------------------------|
-| 1D   | `1d`  | minute candles (intraday) | `FHKST03010200` |
-| 1W   | `1w`  | daily | `FHKST03010100` |
-| 1M   | `1m`  | daily | `FHKST03010100` |
-| 3M   | `3m`  | daily | `FHKST03010100` |
-| 1Y   | `1y`  | daily / weekly | `FHKST03010100` |
+| Pill | `interval` param | Granularity | Visible window | Source tr_id (backend) |
+|------|------------------|-------------|----------------|------------------------|
+| 분봉 | `min`   | 1-minute (intraday) | current session | `FHKST03010200` |
+| 일봉 | `day`   | daily   | ~6 months | `FHKST03010100` |
+| 주봉 | `week`  | weekly  | ~2 years  | `FHKST03010100` |
+| 월봉 | `month` | monthly | ~5 years  | `FHKST03010100` |
 
-Default `1m`. Switching periods changes the query key, so each period's data
-is cached independently.
+Default `day`. Switching intervals changes the query key, so each interval's
+data is cached independently. `SymbolChart` accepts an optional
+`initialInterval` so the AI assistant can open the chart at a requested
+granularity (`/trading?symbol=&name=&interval=`).
 
 ## 4. Data / API integration
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/stocks/{symbol}/history?period=` | GET | OHLCV candle series for the chart |
+| `/api/v1/stocks/{symbol}/history?interval=` | GET | OHLCV candle series for the chart |
 | `/api/v1/stocks/{symbol}/price` (or `/auth`-shared price) | GET | Header current price + change |
 
-Expected history response (the contract `STOCKS.md` should formalize):
+History response (formalized in `STOCKS.md` §2):
 ```json
 {
   "symbol": "005930",
-  "period": "1m",
+  "interval": "day",
   "candles": [
     { "time": "2026-05-02", "open": 71000, "high": 72500, "low": 70800, "close": 72000, "volume": 12345678 }
   ]
 }
 ```
 
-Query key: `['stocks', symbol, 'history', period]`. Polling: during KRX market
-hours the chart may refetch the latest candle on the shared
+`time` is an ISO date for day/week/month candles, or epoch seconds (int) for
+`min` candles. Query key: `['stocks', symbol, 'history', interval]`. Polling:
+during KRX market hours the chart may refetch the latest candle on the shared
 `useMarketPollingInterval` (Phase 2); Phase 1 fetches once per open.
 
 ## 5. Types
 
 ```typescript
-type ChartPeriod = '1d' | '1w' | '1m' | '3m' | '1y';
+type ChartInterval = 'min' | 'day' | 'week' | 'month';
 
-// lightweight-charts expects `time` as 'yyyy-mm-dd' (daily) or a UNIX
-// timestamp (intraday); the adapter normalizes the backend value.
+// lightweight-charts expects `time` as 'yyyy-mm-dd' (day/week/month) or a UNIX
+// timestamp in seconds (intraday min); the backend already emits the right form.
 interface Candle {
   time: string | number;
   open: number;
@@ -165,7 +168,7 @@ interface Candle {
 
 interface StockHistoryResult {
   symbol: string;
-  period: ChartPeriod;
+  interval: ChartInterval;
   candles: Candle[];
 }
 ```
@@ -178,10 +181,10 @@ existing adapters.
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `SymbolChart` | `src/components/common/` | Shared header price + period toggle + chart; KR-only / overseas degradation. Used by both surfaces |
+| `SymbolChart` | `src/components/common/` | Shared header price + interval toggle + chart; KR-only / overseas degradation. Used by both surfaces |
 | `StockDetailModal` | `src/components/common/` | Global modal shell (Dashboard/Portfolio): wraps `SymbolChart` + quick actions + a11y |
 | `PriceChart` | `src/components/common/` | lightweight-charts candlestick + volume |
-| `PeriodToggle` | `src/components/common/` | Period pill group |
+| `IntervalToggle` | `src/components/common/` | Candle-interval pill group (분/일/주/월) |
 | `TradingWatchlist` | `src/app/trading/_components/` | Trading-page left-rail watchlist; rows select the symbol for the inline chart + order |
 
 These are shared (cross-page) components, so they live under
@@ -193,9 +196,9 @@ with `PriceDisplay` / `ChangeDisplay` / `StaleBadge`.
 | Data | Type | Tool | Key / Scope |
 |------|------|------|-------------|
 | Active symbol (open modal) | Client | Zustand | `useStockDetail` store (`activeSymbol`, `open`, `close`) |
-| Candle history | Server | TanStack Query | `['stocks', symbol, 'history', period]` |
+| Candle history | Server | TanStack Query | `['stocks', symbol, 'history', interval]` |
 | Header price | Server | TanStack Query | `['stocks', symbol, 'price']` |
-| Selected period | Local | `useState` | `StockDetailModal` |
+| Selected interval | Local | `useState` | `SymbolChart` |
 
 The Zustand store mirrors the shape in the project's `STATE_MANAGEMENT.md`
 example (a `selectedSymbol`-style modal store): a nullable symbol plus

@@ -14,11 +14,15 @@ import pytest
 from app.core.exceptions import InvalidSymbolError, KISAPIError
 from app.models.assistant import PendingAction
 from app.models.stocks import RankedStock
-from app.services.assistant_tools import (
+from app.services.assistant.tools import (
     ADD_TO_WATCHLIST,
+    GET_ACCOUNT_SUMMARY,
+    GET_CHART,
     GET_QUOTE,
+    LIST_HOLDINGS,
     LIST_WATCHLIST,
     RANK_STOCKS,
+    REMOVE_FROM_WATCHLIST,
     SEARCH_STOCKS,
     TurnCollector,
     build_tool_context,
@@ -28,11 +32,13 @@ from app.services.assistant_tools import (
 from app.services.stocks import StockSearchItem
 
 
-def _ctx(stocks=None, watchlist=None):
+def _ctx(stocks=None, watchlist=None, portfolio=None, holdings=None):
     collector = TurnCollector()
     ctx = build_tool_context(
         stocks=stocks or AsyncMock(),
         watchlist=watchlist or AsyncMock(),
+        portfolio=portfolio or AsyncMock(),
+        holdings=holdings or AsyncMock(),
         collector=collector,
     )
     return ctx, collector
@@ -186,6 +192,189 @@ async def test_execute_mutate_action_partial_failure() -> None:
 
     assert result["added"] == ["005930"]
     assert result["skipped"] == [{"symbol": "999999", "error_code": "KIS_API_ERROR"}]
+
+
+# ---------------------------------------------------------------------------
+# Chart domain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_chart_tool_emits_view_action_and_summary_not_candles() -> None:
+    from unittest.mock import MagicMock
+
+    from app.models.stocks import Candle, ChartInterval
+
+    stocks = AsyncMock()
+    stocks.resolve_name = MagicMock(return_value="삼성전자")  # sync method
+    stocks.get_history.return_value = [
+        Candle(time="2026-06-01", open=70000, high=72000, low=69000, close=70000, volume=1000),
+        Candle(time="2026-06-02", open=70000, high=75000, low=69500, close=74000, volume=1200),
+    ]
+    ctx, collector = _ctx(stocks=stocks)
+
+    result = await ctx.handlers[GET_CHART]({"symbol": "005930", "interval": "day"})
+    payload = json.loads(result["content"][0]["text"])
+
+    stocks.get_history.assert_awaited_once_with("005930", ChartInterval.DAY)
+    # The model gets a compact summary, NOT the raw candle series.
+    assert "candles" not in payload
+    assert payload["symbol"] == "005930"
+    assert payload["name"] == "삼성전자"
+    assert payload["interval"] == "day"
+    assert payload["period_high"] == 75000
+    assert payload["period_low"] == 69000
+    assert payload["change_pct"] == pytest.approx(5.71, abs=0.01)
+    assert payload["trend"] == "up"
+    assert collector.tool_calls[0].ok is True
+    # A view action tells the client to open the chart in the Trading tab.
+    assert len(collector.view_actions) == 1
+    action = collector.view_actions[0]
+    assert action.type == "open_chart"
+    assert action.params == {"symbol": "005930", "name": "삼성전자", "interval": "day"}
+
+
+@pytest.mark.asyncio
+async def test_get_chart_tool_defaults_interval_and_handles_empty_series() -> None:
+    from unittest.mock import MagicMock
+
+    from app.models.stocks import ChartInterval
+
+    stocks = AsyncMock()
+    stocks.resolve_name = MagicMock(return_value="삼성전자")
+    stocks.get_history.return_value = []
+    ctx, collector = _ctx(stocks=stocks)
+
+    result = await ctx.handlers[GET_CHART]({"symbol": "005930"})
+    payload = json.loads(result["content"][0]["text"])
+
+    stocks.get_history.assert_awaited_once_with("005930", ChartInterval.DAY)
+    assert payload["available"] is False
+    # Still navigate — the chart view handles the empty/degraded state itself.
+    assert collector.view_actions[0].type == "open_chart"
+
+
+@pytest.mark.asyncio
+async def test_get_chart_tool_invalid_symbol_returns_is_error() -> None:
+    ctx, collector = _ctx()
+    result = await ctx.handlers[GET_CHART]({"symbol": "abc"})
+    assert result["is_error"] is True
+    assert collector.tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Portfolio domain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_account_summary_tool_success() -> None:
+    from app.services.portfolio import AccountSummary
+
+    portfolio = AsyncMock()
+    portfolio.get_account_summary.return_value = AccountSummary(
+        total_asset=1_000_000, daily_profit=5000, cash_balance=200_000, holdings_count=3
+    )
+    ctx, collector = _ctx(portfolio=portfolio)
+
+    result = await ctx.handlers[GET_ACCOUNT_SUMMARY]({})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["total_asset"] == 1_000_000
+    assert payload["holdings_count"] == 3
+    assert collector.tool_calls[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_list_holdings_tool_success() -> None:
+    from app.services.portfolio import Holding, HoldingsResult
+
+    holdings = AsyncMock()
+    holdings.get_holdings.return_value = HoldingsResult(
+        holdings=[
+            Holding(
+                symbol="005930", name="삼성전자", quantity=10, avg_purchase_price=70000,
+                current_price=72000, evaluation_amount=720000, purchase_amount=700000,
+                profit=20000, profit_rate=2.86,
+            )
+        ],
+        errors=[],
+    )
+    ctx, collector = _ctx(holdings=holdings)
+
+    result = await ctx.handlers[LIST_HOLDINGS]({})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["holdings"][0]["symbol"] == "005930"
+    assert payload["holdings"][0]["quantity"] == 10
+    assert collector.tool_calls[0].ok is True
+
+
+# ---------------------------------------------------------------------------
+# Watchlist remove (mutate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_gate_denies_and_records_pending_action() -> None:
+    ctx, collector = _ctx()
+
+    decision = await ctx.can_use_tool(
+        qualified_name(REMOVE_FROM_WATCHLIST),
+        {"symbols": ["005930"]},
+        None,
+    )
+
+    assert decision.behavior == "deny"
+    assert len(collector.pending_actions) == 1
+    action = collector.pending_actions[0]
+    assert action.tool == REMOVE_FROM_WATCHLIST
+    assert action.input == {"symbols": ["005930"]}
+
+
+@pytest.mark.asyncio
+async def test_remove_from_watchlist_tool_never_executes_inline() -> None:
+    watchlist = AsyncMock()
+    ctx, _ = _ctx(watchlist=watchlist)
+    result = await ctx.handlers[REMOVE_FROM_WATCHLIST]({"symbols": ["005930"]})
+    assert result["is_error"] is True
+    watchlist.delete_watchlist_by_symbol.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_mutate_action_removes_symbols() -> None:
+    watchlist = AsyncMock()
+    action = PendingAction(
+        id="act_1",
+        tool=REMOVE_FROM_WATCHLIST,
+        summary="...",
+        input={"symbols": ["005930", "000660"]},
+    )
+
+    result, message = await execute_mutate_action(action, watchlist)
+
+    assert result == {"removed": ["005930", "000660"], "skipped": []}
+    assert "2종목" in message
+    assert watchlist.delete_watchlist_by_symbol.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_mutate_action_remove_partial_failure() -> None:
+    from app.core.exceptions import WatchlistNotFoundError
+
+    watchlist = AsyncMock()
+    watchlist.delete_watchlist_by_symbol.side_effect = [None, WatchlistNotFoundError("999999")]
+    action = PendingAction(
+        id="act_1",
+        tool=REMOVE_FROM_WATCHLIST,
+        summary="...",
+        input={"symbols": ["005930", "999999"]},
+    )
+
+    result, _ = await execute_mutate_action(action, watchlist)
+
+    assert result["removed"] == ["005930"]
+    assert result["skipped"] == [{"symbol": "999999", "error_code": "NOT_FOUND"}]
 
 
 @pytest.mark.asyncio

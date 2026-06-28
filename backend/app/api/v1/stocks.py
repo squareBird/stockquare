@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Path, Query
 from app.api.deps import get_kis_client, get_stock_index
 from app.kis.client import KISClient
 from app.models.stocks import (
-    ChartPeriod,
+    ChartInterval,
     StockHistoryResponse,
     StockMarket,
     StockSearchItemResponse,
@@ -49,8 +49,10 @@ async def stock_search(
 @router.get("/{symbol}/history", response_model=StockHistoryResponse)
 async def stock_history(
     symbol: Annotated[str, Path(pattern=r"^\d{6}$", description="6-digit KRX code")],
-    period: Annotated[ChartPeriod, Query(description="Candle window")] = ChartPeriod.ONE_MONTH,
+    interval: Annotated[
+        ChartInterval, Query(description="Candle granularity")
+    ] = ChartInterval.DAY,
     service: StocksService = Depends(_get_service),
 ) -> StockHistoryResponse:
-    candles = await service.get_history(symbol, period)
-    return StockHistoryResponse(symbol=symbol, period=period, candles=candles)
+    candles = await service.get_history(symbol, interval)
+    return StockHistoryResponse(symbol=symbol, interval=interval, candles=candles)

@@ -2,7 +2,15 @@
 // Keeping this separate lets components stay in idiomatic camelCase while the
 // backend contract owns the wire format.
 
-import type { Candle, ChartPeriod, StockHistoryResult } from '@/types/charts';
+import type {
+  ChatResponse,
+  ConfirmResponse,
+  PendingAction,
+  Recommendation,
+  ToolCallResult,
+  ViewAction,
+} from '@/types/assistant';
+import type { Candle, ChartInterval, StockHistoryResult } from '@/types/charts';
 import type {
   AccountConnectionStatus,
   AccountMode,
@@ -15,13 +23,6 @@ import type {
   WatchlistItem,
   WatchlistItemError,
 } from '@/types/dashboard';
-import type {
-  ChatResponse,
-  ConfirmResponse,
-  PendingAction,
-  Recommendation,
-  ToolCallResult,
-} from '@/types/assistant';
 import type { Order, OrderSide, OrderStatus, OrderType } from '@/types/orders';
 import type { Holding, HoldingError } from '@/types/portfolio';
 import type {
@@ -128,7 +129,7 @@ interface StockSearchResultResponse {
 }
 
 interface CandleResponse {
-  time: string;
+  time: string | number;
   open: number;
   high: number;
   low: number;
@@ -138,7 +139,7 @@ interface CandleResponse {
 
 interface StockHistoryResponse {
   symbol: string;
-  period: ChartPeriod;
+  interval: ChartInterval;
   candles: CandleResponse[];
 }
 
@@ -268,7 +269,7 @@ export function toCandle(raw: CandleResponse): Candle {
 export function toStockHistory(raw: StockHistoryResponse): StockHistoryResult {
   return {
     symbol: raw.symbol,
-    period: raw.period,
+    interval: raw.interval,
     candles: raw.candles.map(toCandle),
   };
 }
@@ -379,11 +380,17 @@ interface RecommendationResponse {
   reason: string;
 }
 
+interface ViewActionResponse {
+  type: string;
+  params: Record<string, unknown>;
+}
+
 interface ChatResponseRaw {
   reply: string;
   tool_calls: ToolCallResultResponse[];
   pending_actions: PendingActionResponse[];
   recommendations: RecommendationResponse[];
+  view_actions: ViewActionResponse[];
 }
 
 interface ConfirmResponseRaw {
@@ -411,12 +418,17 @@ function toRecommendation(raw: RecommendationResponse): Recommendation {
   };
 }
 
+function toViewAction(raw: ViewActionResponse): ViewAction {
+  return { type: raw.type, params: raw.params };
+}
+
 export function toChatResponse(raw: ChatResponseRaw): ChatResponse {
   return {
     reply: raw.reply,
     toolCalls: raw.tool_calls.map(toToolCallResult),
     pendingActions: raw.pending_actions.map(toPendingAction),
     recommendations: raw.recommendations.map(toRecommendation),
+    viewActions: (raw.view_actions ?? []).map(toViewAction),
   };
 }
 

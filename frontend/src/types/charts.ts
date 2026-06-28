@@ -2,14 +2,16 @@
 // returns an OHLCV candle series; these types are what the chart components
 // consume after passing through the adapter layer in `lib/api/adapters.ts`.
 //
-// Phase 1 ships daily candles only (1w/1m/3m/1y). Intraday `1d` minute candles
-// are deferred to Phase 2 per the backend STOCKS spec.
+// `interval` selects the candle granularity: 분봉(min) / 일봉(day, default) /
+// 주봉(week) / 월봉(month). The visible range is derived per interval by the
+// backend (see the STOCKS spec); the client only picks the granularity.
 
-export type ChartPeriod = '1w' | '1m' | '3m' | '1y';
+export type ChartInterval = 'min' | 'day' | 'week' | 'month';
 
-// lightweight-charts consumes daily `time` as an ISO 'yyyy-mm-dd' string.
+// lightweight-charts consumes `time` as an ISO 'yyyy-mm-dd' string for
+// day/week/month candles, or an epoch-second number for intraday minute candles.
 export interface Candle {
-  time: string;
+  time: string | number;
   open: number;
   high: number;
   low: number;
@@ -19,6 +21,6 @@ export interface Candle {
 
 export interface StockHistoryResult {
   symbol: string;
-  period: ChartPeriod;
+  interval: ChartInterval;
   candles: Candle[];
 }

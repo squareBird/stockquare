@@ -27,6 +27,13 @@ interface AssistantState {
   close: () => void;
   toggle: () => void;
   appendEntry: (entry: Omit<ConversationEntry, 'id'>) => void;
+  // Append a new entry and return its id, so streaming callers can target it.
+  appendEntryWithId: (entry: Omit<ConversationEntry, 'id'>) => string;
+  // Patch an existing entry in place (used to accumulate streamed tokens and to
+  // attach the final recommendations / pending action once the stream ends).
+  updateEntry: (id: string, patch: Partial<Omit<ConversationEntry, 'id'>>) => void;
+  // Append text to an existing entry's content (one streamed delta).
+  appendToEntry: (id: string, text: string) => void;
   setPendingAction: (action: PendingAction | null) => void;
   setSending: (sending: boolean) => void;
   reset: () => void;
@@ -43,6 +50,21 @@ export const useAssistant = create<AssistantState>((set) => ({
   toggle: () => set((state) => ({ isOpen: !state.isOpen })),
   appendEntry: (entry) =>
     set((state) => ({ entries: [...state.entries, { ...entry, id: nextEntryId() }] })),
+  appendEntryWithId: (entry) => {
+    const id = nextEntryId();
+    set((state) => ({ entries: [...state.entries, { ...entry, id }] }));
+    return id;
+  },
+  updateEntry: (id, patch) =>
+    set((state) => ({
+      entries: state.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+    })),
+  appendToEntry: (id, text) =>
+    set((state) => ({
+      entries: state.entries.map((e) =>
+        e.id === id ? { ...e, content: e.content + text } : e,
+      ),
+    })),
   setPendingAction: (action) => set({ pendingAction: action }),
   setSending: (sending) => set({ isSending: sending }),
   reset: () => set({ entries: [], pendingAction: null, isSending: false }),

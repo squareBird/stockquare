@@ -1,7 +1,7 @@
 // Static mock data used in development when the backend is unavailable.
 // Activated only when `NEXT_PUBLIC_USE_MOCK === 'true'`. Never used in production.
 
-import type { Candle, ChartPeriod, StockHistoryResult } from '@/types/charts';
+import type { Candle, ChartInterval, StockHistoryResult } from '@/types/charts';
 import type {
   AccountStatus,
   AccountSummary,
@@ -207,18 +207,26 @@ let nextStrategyId = INITIAL_MOCK_STRATEGIES.length + 1;
 let mockOrders: Order[] = [];
 let nextOrderId = 1;
 
-const CANDLE_COUNT_BY_PERIOD: Record<ChartPeriod, number> = {
-  '1w': 5,
-  '1m': 22,
-  '3m': 66,
-  '1y': 250,
+// Candle count per interval (mirrors the backend's per-interval window).
+const CANDLE_COUNT_BY_INTERVAL: Record<ChartInterval, number> = {
+  min: 130,
+  day: 120,
+  week: 104,
+  month: 60,
 };
 
-// Deterministic-ish synthetic daily candles so the chart renders in mock mode.
-// A sine drift plus a seeded pseudo-random wobble keeps the series stable
-// enough to read while still looking like price action.
-function generateMockCandles(period: ChartPeriod): Candle[] {
-  const count = CANDLE_COUNT_BY_PERIOD[period];
+// Step in days between successive candles for the day-family intervals.
+const STEP_DAYS_BY_INTERVAL: Record<Exclude<ChartInterval, 'min'>, number> = {
+  day: 1,
+  week: 7,
+  month: 30,
+};
+
+// Deterministic-ish synthetic candles so the chart renders in mock mode. A sine
+// drift plus a seeded pseudo-random wobble keeps the series stable enough to
+// read while still looking like price action.
+function generateMockCandles(interval: ChartInterval): Candle[] {
+  const count = CANDLE_COUNT_BY_INTERVAL[interval];
   const candles: Candle[] = [];
   const today = new Date();
   let price = 70_000;
@@ -228,15 +236,23 @@ function generateMockCandles(period: ChartPeriod): Candle[] {
     return seed / 2_147_483_648 - 0.5;
   };
   for (let i = count - 1; i >= 0; i -= 1) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - i);
     const open = price;
     const drift = (Math.sin(i / 4) + wobble()) * 900;
     const close = Math.max(1_000, Math.round(open + drift));
     const high = Math.max(open, close) + Math.round(Math.abs(wobble()) * 600);
     const low = Math.min(open, close) - Math.round(Math.abs(wobble()) * 600);
     const volume = 5_000_000 + Math.round(Math.abs(wobble()) * 10_000_000);
-    candles.push({ time: date.toISOString().slice(0, 10), open, high, low, close, volume });
+    // Minute candles use epoch-second timestamps (60s apart); day/week/month
+    // use ISO dates stepped by the interval's day span.
+    let time: string | number;
+    if (interval === 'min') {
+      time = Math.floor(today.getTime() / 1000) - i * 60;
+    } else {
+      const date = new Date(today);
+      date.setDate(today.getDate() - i * STEP_DAYS_BY_INTERVAL[interval]);
+      time = date.toISOString().slice(0, 10);
+    }
+    candles.push({ time, open, high, low, close, volume });
     price = close;
   }
   return candles;
@@ -344,10 +360,10 @@ export const mockApi = {
     mockOrders = [...mockOrders.slice(0, index), updated, ...mockOrders.slice(index + 1)];
     return updated;
   },
-  getStockHistory: (symbol: string, period: ChartPeriod): StockHistoryResult => ({
+  getStockHistory: (symbol: string, interval: ChartInterval): StockHistoryResult => ({
     symbol,
-    period,
-    candles: generateMockCandles(period),
+    interval,
+    candles: generateMockCandles(interval),
   }),
 
   // Strategy mock API

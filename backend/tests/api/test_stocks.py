@@ -10,6 +10,8 @@ from app.kis.master import StockMasterRow
 from app.kis.models import (
     DailyChartCandle,
     DailyChartResponse,
+    MinuteChartCandle,
+    MinuteChartResponse,
     SearchInfoOutput,
     SearchInfoResponse,
     StockPriceOutput,
@@ -187,11 +189,11 @@ def _chart_response() -> DailyChartResponse:
 @pytest.mark.asyncio
 async def test_stock_history_success(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
     fake_kis_client.inquire_daily_itemchartprice.return_value = _chart_response()
-    resp = await app_client.get("/api/v1/stocks/005930/history", params={"period": "1m"})
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"interval": "day"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["symbol"] == "005930"
-    assert body["period"] == "1m"
+    assert body["interval"] == "day"
     # KIS rows are newest-first; the service reverses them to oldest-first and
     # drops the blank padding row.
     assert [c["time"] for c in body["candles"]] == ["2026-05-01", "2026-05-02"]
@@ -201,11 +203,58 @@ async def test_stock_history_success(app_client: AsyncClient, fake_kis_client: F
 
 
 @pytest.mark.asyncio
-async def test_stock_history_defaults_to_one_month(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
+async def test_stock_history_defaults_to_day(app_client: AsyncClient, fake_kis_client: FakeKISClient) -> None:
     fake_kis_client.inquire_daily_itemchartprice.return_value = _chart_response()
     resp = await app_client.get("/api/v1/stocks/005930/history")
     assert resp.status_code == 200
-    assert resp.json()["period"] == "1m"
+    assert resp.json()["interval"] == "day"
+
+
+@pytest.mark.asyncio
+async def test_stock_history_weekly_uses_period_code(
+    app_client: AsyncClient, fake_kis_client: FakeKISClient
+) -> None:
+    fake_kis_client.inquire_daily_itemchartprice.return_value = _chart_response()
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"interval": "week"})
+    assert resp.status_code == 200
+    # The day-family intervals share the daily endpoint with a D/W/M code.
+    _, kwargs = fake_kis_client.inquire_daily_itemchartprice.call_args
+    assert kwargs["period_code"] == "W"
+
+
+@pytest.mark.asyncio
+async def test_stock_history_minute_uses_intraday_endpoint(
+    app_client: AsyncClient, fake_kis_client: FakeKISClient
+) -> None:
+    # One page of two minute candles, then an empty page to stop paging.
+    page = MinuteChartResponse(
+        rt_cd="0",
+        output2=[
+            MinuteChartCandle(
+                stck_bsop_date="20260502", stck_cntg_hour="093100",
+                stck_oprc="71000", stck_hgpr="71200", stck_lwpr="70900",
+                stck_prpr="71100", cntg_vol="1000",
+            ),
+            MinuteChartCandle(
+                stck_bsop_date="20260502", stck_cntg_hour="093000",
+                stck_oprc="70800", stck_hgpr="71000", stck_lwpr="70800",
+                stck_prpr="71000", cntg_vol="1200",
+            ),
+        ],
+    )
+    empty = MinuteChartResponse(rt_cd="0", output2=[])
+    fake_kis_client.inquire_time_itemchartprice.side_effect = [page, empty]
+
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"interval": "min"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interval"] == "min"
+    # Minute candles carry epoch-second integer times, oldest-first.
+    times = [c["time"] for c in body["candles"]]
+    assert all(isinstance(t, int) for t in times)
+    assert times == sorted(times)
+    assert len(times) == 2
+    fake_kis_client.inquire_daily_itemchartprice.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -217,8 +266,8 @@ async def test_stock_history_symbol_not_found(app_client: AsyncClient, fake_kis_
 
 
 @pytest.mark.asyncio
-async def test_stock_history_invalid_period(app_client: AsyncClient) -> None:
-    resp = await app_client.get("/api/v1/stocks/005930/history", params={"period": "5y"})
+async def test_stock_history_invalid_interval(app_client: AsyncClient) -> None:
+    resp = await app_client.get("/api/v1/stocks/005930/history", params={"interval": "1y"})
     assert resp.status_code == 422
 
 
